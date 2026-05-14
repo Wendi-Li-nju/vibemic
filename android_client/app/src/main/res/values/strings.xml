@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">Realtime Cursor Sync</string>
+    <string name="hint_host">Host IP (e.g. 192.168.1.10)</string>
+    <string name="hint_port">Port</string>
+    <string name="hint_input">Type here to append at the current desktop cursor</string>
+    <string name="connect">Connect</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="clear_input">Clear local input</string>
+    <string name="title_sync">Realtime Cursor Sync</string>
+    <string name="subtitle_sync">Append-only phone to desktop typing relay</string>
+    <string name="label_connection">Connection</string>
+    <string name="label_input">Append input</string>
+    <string name="label_paste_mode">Paste mode</string>
+    <string name="paste_mode_ctrl_v">Ctrl+V</string>
+    <string name="paste_mode_ctrl_shift_v">Ctrl+Shift+V</string>
+    <string name="paste_mode_shift_insert">Shift+Insert</string>
+</resources>

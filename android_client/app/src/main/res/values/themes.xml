@@ -1,0 +1,11 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.RealtimeCursorSyncClient" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">@color/ios_accent</item>
+        <item name="colorPrimaryVariant">@color/ios_accent</item>
+        <item name="colorSecondary">@color/ios_accent</item>
+        <item name="android:windowBackground">@drawable/bg_screen</item>
+        <item name="android:textColorPrimary">@color/ios_text_primary</item>
+        <item name="android:textColorSecondary">@color/ios_text_secondary</item>
+        <item name="android:statusBarColor" tools:targetApi="l">@color/ios_bg_top</item>
+    </style>
+</resources>

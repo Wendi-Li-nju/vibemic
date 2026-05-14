@@ -1,0 +1,13 @@
+<resources>
+    <color name="black">#000000</color>
+    <color name="white">#FFFFFF</color>
+    <color name="ios_bg_top">#F8FAFD</color>
+    <color name="ios_bg_bottom">#EEF2F7</color>
+    <color name="ios_card">#FFFFFF</color>
+    <color name="ios_card_stroke">#E6EBF2</color>
+    <color name="ios_text_primary">#1F2937</color>
+    <color name="ios_text_secondary">#6B7280</color>
+    <color name="ios_accent">#2D7FF9</color>
+    <color name="ios_accent_soft">#E7F0FF</color>
+    <color name="ios_success_soft">#EAF8EF</color>
+</resources>
