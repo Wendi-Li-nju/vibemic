@@ -1,2 +1,1 @@
-"""Realtime cursor sync host."""
-
+"""VibeMic host."""

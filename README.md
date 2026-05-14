@@ -1,56 +1,85 @@
-# Realtime Cursor Sync
+# VibeMic
 
-Realtime LAN append-only text sync from phone to the current cursor on Windows and Linux X11.
+Use your phone as a vibe mic for coding on Windows and Ubuntu over LAN or Tailscale.
+
+VibeMic is built for the remote-work case where desktop audio input is unreliable or unavailable: you are connected to your coding machine through a remote desktop tool such as ToDesk, the remote machine cannot use your local microphone cleanly, but your phone can still reach that machine over the same LAN or a Tailscale network. In that setup, VibeMic turns the phone into a nearby input endpoint and forwards the resulting text to the desktop cursor.
+
+The current MVP is text-first rather than raw-audio transport. The Android side captures text produced on the phone and streams appended text to the desktop host, which injects it at the current cursor position. That makes the project a practical base for "phone as coding mic" workflows while keeping the transport simple and reliable.
+
+## Why this exists
+
+- Remote desktop sessions often break microphone routing or make Bluetooth and USB microphones awkward to use.
+- A phone already has a good microphone, battery, and network connectivity.
+- Tailscale makes "same LAN" style connectivity practical even when the phone and desktop are not physically colocated.
+- For voice-heavy coding workflows, the useful outcome is text appearing at the active cursor with low friction.
+
+## What VibeMic does today
+
+- Runs a Python host on Windows and Linux X11.
+- Runs an Android client that sends appended text to the host over WebSocket.
+- Injects Unicode text at the current desktop cursor.
+- Supports single-device sessions with sequence-checked delivery and heartbeat monitoring.
+- Lets the Android client choose Linux paste mode explicitly: `Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert`.
+
+## Current scope and limitations
+
+- Current MVP is append-only desktop text insertion.
+- Non-append edits stay local to the Android input box.
+- Plain text only: no IME composition, emoji control keys, `Enter`, `Delete`, or arrow keys.
+- LAN or Tailscale networking only.
+- Linux support currently targets X11, not Wayland.
+- The project direction is "phone as vibe mic", but the current transport layer sends text, not microphone audio frames.
 
 ## Components
 
-- `windows_host/`: Python host app for Windows and Linux X11. Receives text over WebSocket and injects Unicode keystrokes at current cursor.
-- `android_client/`: Android app source code for realtime typing and LAN session management.
-- `protocol/PROTOCOL.md`: Message protocol and sequencing rules.
+- `windows_host/`: Python host app for Windows and Linux X11. Receives text over WebSocket and injects it into the active cursor target.
+- `android_client/`: Android app source code for the phone-side input client and session management.
+- `protocol/PROTOCOL.md`: Wire protocol and sequencing rules.
 
-## MVP Scope
+## Quick start
 
-- Realtime append-at-cursor sync.
-- LAN only.
-- Plain text characters only (no IME composition, emoji control keys, enter/delete).
-- Append-only editing from the phone. Non-append edits stay local to the Android input box.
-- Single active phone session.
-- Linux paste mode can be explicitly selected in the Android app (`Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert`).
-
-## Quick Start (Host)
-
-1. Install Python 3.10+.
-2. Install dependency:
+1. Install Python 3.10+ on the host machine.
+2. Install host dependencies:
 
    ```bash
    pip install -r windows_host/requirements.txt
    ```
 
-3. Start host:
+3. Start the host:
 
    ```bash
    python windows_host/run_host.py --bind 0.0.0.0 --port 8765
    ```
 
-4. Open Android app and connect to `ws://<host-ip>:8765/ws`.
+4. Open the Android app and connect to `ws://<host-ip>:8765/ws`.
+5. Make sure the phone can reach the host either on the same LAN or through Tailscale.
+6. Speak or type on the phone, then let the desktop host inject the resulting text at the active cursor.
 
-## Windows Program Build
+## Typical use case
 
-Build tray executable:
+1. Connect to your Windows or Ubuntu coding machine through ToDesk or another remote desktop tool.
+2. Join the phone and desktop to the same LAN, or connect both to the same Tailscale tailnet.
+3. Start the VibeMic host on the desktop.
+4. Connect the Android client from the phone.
+5. Use the phone as the nearby input device while coding remotely.
+
+## Windows build
+
+Build the tray executable:
 
 ```powershell
 .\scripts\build_windows_host_app.ps1
 ```
 
-Run produced app:
+Output:
 
 `windows_host\dist\RealtimeCursorHost\RealtimeCursorHost.exe`
 
 ## Validation
 
-One-click acceptance checks (host tests + Android debug build):
+One-click acceptance checks (host tests and Android debug build):
 
-PowerShell (Windows):
+PowerShell:
 
 ```powershell
 .\scripts\run_acceptance_checks.ps1
@@ -62,7 +91,7 @@ Bash:
 ./scripts/run_acceptance_checks.sh
 ```
 
-Host-only checks (skip Android build):
+Host-only checks:
 
 ```powershell
 .\scripts\run_acceptance_checks.ps1 -SkipAndroid
@@ -72,7 +101,7 @@ Host-only checks (skip Android build):
 SKIP_ANDROID=1 ./scripts/run_acceptance_checks.sh
 ```
 
-If your Gradle is not on `PATH`, pass it explicitly:
+If Gradle is not on `PATH`, pass it explicitly:
 
 ```powershell
 .\scripts\run_acceptance_checks.ps1 -GradleCommand "F:\Code\gui-agent-assistant-android\gradlew.bat"

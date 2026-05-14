@@ -10,7 +10,7 @@ from .server import build_app
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Realtime cursor sync host")
+    parser = argparse.ArgumentParser(description="VibeMic host")
     parser.add_argument("--bind", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8765, help="Bind port")
     parser.add_argument(

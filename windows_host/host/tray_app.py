@@ -26,7 +26,7 @@ def _detect_lan_ip() -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Realtime cursor sync host tray app")
+    parser = argparse.ArgumentParser(description="VibeMic host tray app")
     parser.add_argument("--bind", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8765, help="Bind port")
     parser.add_argument(
@@ -61,9 +61,9 @@ class TrayHostApp:
             return
         try:
             self.service.start()
-            _show_message("Realtime Cursor Host", self._status_text())
+            _show_message("VibeMic Host", self._status_text())
         except Exception as exc:  # pragma: no cover - runtime guard
-            _show_message("Realtime Cursor Host", f"Failed to start service:\n{exc}")
+            _show_message("VibeMic Host", f"Failed to start service:\n{exc}")
         finally:
             icon.update_menu()
 
@@ -72,7 +72,7 @@ class TrayHostApp:
         icon.update_menu()
 
     def _show_status(self, _icon, _item) -> None:
-        _show_message("Realtime Cursor Host", self._status_text())
+        _show_message("VibeMic Host", self._status_text())
 
     def _quit(self, icon, _item) -> None:
         self.service.stop()
@@ -95,7 +95,7 @@ class TrayHostApp:
             pystray.MenuItem("Show Status", self._show_status),
             pystray.MenuItem("Quit", self._quit),
         )
-        self._icon = pystray.Icon("realtime_cursor_sync", _create_image(), "Realtime Cursor Host", menu)
+        self._icon = pystray.Icon("vibemic", _create_image(), "VibeMic Host", menu)
         self._start(self._icon, None)
         self._icon.run()
 

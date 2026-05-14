@@ -1,6 +1,10 @@
-# Android Client
+# VibeMic Android Client
 
-Android app that captures local typing and streams realtime appended text to the host.
+Android app for the phone side of VibeMic. It captures text produced on the phone and streams appended text to the desktop host.
+
+## Role in the product
+
+This client is intended to make the phone a practical nearby input device for remote coding sessions. The product goal is "phone as vibe mic"; the current MVP sends text generated on the phone rather than raw microphone audio.
 
 ## MVP Behavior
 
@@ -32,4 +36,4 @@ cd android_client
 - Desktop sync is append-only; delete/replace edits stay local to the Android input box.
 - For Linux targets, the app can force `Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert` instead of relying on host-side auto detection.
 - No control keys (`enter/delete/arrow`) and no IME composition support.
-- LAN only.
+- Networking is limited to LAN or Tailscale-style private connectivity.

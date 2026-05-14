@@ -1,6 +1,6 @@
-# Host Service
+# VibeMic Host Service
 
-Python host service that receives mobile text over WebSocket and injects appended text into the active cursor target on Windows and Linux X11.
+Python host service for VibeMic. It receives phone-side text over WebSocket and injects appended text into the active cursor target on Windows and Linux X11.
 
 ## Features
 
@@ -11,6 +11,10 @@ Python host service that receives mobile text over WebSocket and injects appende
 - Heartbeat and session timeout.
 - Single active phone session.
 
+## Role in the product
+
+The host is the desktop-side half of the "phone as vibe mic" workflow. It accepts text produced on the phone and applies it at the current cursor, which is useful when a remote desktop session cannot use your microphone path reliably.
+
 ## Run
 
 ```bash
@@ -18,7 +22,7 @@ pip install -r requirements.txt
 python run_host.py --bind 0.0.0.0 --port 8765
 ```
 
-## Platform Notes
+## Platform notes
 
 - Windows uses `SendInput(KEYEVENTF_UNICODE)` for direct Unicode injection.
 - Linux currently supports X11 sessions via a clipboard-paste-first stack with fallbacks.
@@ -26,7 +30,7 @@ python run_host.py --bind 0.0.0.0 --port 8765
 - The Android app can explicitly select Linux paste mode (`Ctrl+V`, `Ctrl+Shift+V`, `Shift+Insert`) instead of relying only on host-side auto detection.
 - Wayland sessions are not supported by the built-in injector.
 
-## Tray App (Windows)
+## Tray app (Windows)
 
 Run as a tray program:
 
@@ -55,7 +59,7 @@ On startup, the host logs the endpoint.
 - `ws://<host>:8765/ws` WebSocket endpoint.
 - `http://<host>:8765/health` health and runtime stats.
 
-## Injection Behavior
+## Injection behavior
 
 - Uses `SendInput(KEYEVENTF_UNICODE)` for character injection.
 - Requires a visible, non-minimized foreground window with a valid text cursor.
