@@ -1,0 +1,18 @@
+[Unit]
+Description=VibeMic desktop host
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lwd/codes/VibeMic
+Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:1
+Environment=XAUTHORITY=/run/user/1001/gdm/Xauthority
+Environment=XDG_SESSION_TYPE=x11
+ExecStart=/usr/bin/python /home/lwd/codes/VibeMic/windows_host/run_host.py --bind 0.0.0.0 --port 8765 --log-level INFO
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

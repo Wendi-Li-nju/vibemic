@@ -63,6 +63,53 @@ The current MVP is text-first rather than raw-audio transport. The Android side 
 4. Connect the Android client from the phone.
 5. Use the phone as the nearby input device while coding remotely.
 
+## Ubuntu background service and autostart
+
+On Ubuntu X11, the recommended way to keep the desktop host running in the background is a `systemd --user` service. This lets VibeMic start automatically with your desktop user session, restart after failures, and stay manageable through standard `systemctl` commands.
+
+The repository includes a service template at `scripts/vibemic-host.service`.
+
+Before enabling it, check the session variables that your desktop is currently using:
+
+```bash
+echo "$DISPLAY"
+echo "$XAUTHORITY"
+echo "$XDG_SESSION_TYPE"
+```
+
+If needed, edit `scripts/vibemic-host.service` so that `WorkingDirectory`, `ExecStart`, `DISPLAY`, and `XAUTHORITY` match your machine and login session.
+
+Install and enable the service:
+
+```bash
+mkdir -p ~/.config/systemd/user
+install -m 644 scripts/vibemic-host.service ~/.config/systemd/user/vibemic-host.service
+systemctl --user daemon-reload
+systemctl --user enable --now vibemic-host.service
+```
+
+Verify that it is running:
+
+```bash
+systemctl --user status vibemic-host.service --no-pager
+curl -fsS http://127.0.0.1:8765/health
+```
+
+Useful management commands:
+
+```bash
+systemctl --user restart vibemic-host.service
+systemctl --user stop vibemic-host.service
+journalctl --user -u vibemic-host.service -n 100 --no-pager
+```
+
+Important notes:
+
+- This service is intended for a logged-in desktop session, because text injection depends on the active X11 environment.
+- The current template targets X11 with `DISPLAY=:1` and `XDG_SESSION_TYPE=x11`.
+- If your display number, display manager, or `XAUTHORITY` path changes, update the service file and run `systemctl --user daemon-reload` again.
+- This is not a good fit for "boot before login" server-style startup, because VibeMic needs access to your graphical desktop session.
+
 ## Windows build
 
 Build the tray executable:
