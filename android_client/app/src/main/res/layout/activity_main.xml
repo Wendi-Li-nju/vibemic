@@ -59,32 +59,41 @@
                     android:textSize="13sp"
                     android:textStyle="bold" />
 
-                <EditText
-                    android:id="@+id/hostEditText"
+                <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="48dp"
+                    android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
-                    android:background="@drawable/bg_input_box"
-                    android:hint="@string/hint_host"
-                    android:inputType="textNoSuggestions"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:textColor="@color/ios_text_primary"
-                    android:textColorHint="@color/ios_text_secondary" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
 
-                <EditText
-                    android:id="@+id/portEditText"
-                    android:layout_width="match_parent"
-                    android:layout_height="48dp"
-                    android:layout_marginTop="10dp"
-                    android:background="@drawable/bg_input_box"
-                    android:hint="@string/hint_port"
-                    android:inputType="number"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:text="8765"
-                    android:textColor="@color/ios_text_primary"
-                    android:textColorHint="@color/ios_text_secondary" />
+                    <TextView
+                        android:id="@+id/endpointTextView"
+                        android:layout_width="0dp"
+                        android:layout_height="48dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_input_box"
+                        android:ellipsize="end"
+                        android:gravity="center_vertical"
+                        android:maxLines="1"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:textColor="@color/ios_text_primary"
+                        android:textSize="15sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/connectionSettingsButton"
+                        style="@style/Widget.MaterialComponents.Button"
+                        android:layout_width="wrap_content"
+                        android:layout_height="48dp"
+                        android:layout_marginStart="8dp"
+                        android:minHeight="48dp"
+                        android:text="@string/settings"
+                        android:textAllCaps="false"
+                        android:textColor="@color/ios_accent"
+                        app:backgroundTint="@color/ios_accent_soft"
+                        app:cornerRadius="20dp"
+                        app:elevation="0dp" />
+                </LinearLayout>
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/connectButton"
@@ -120,35 +129,7 @@
                         android:text="Disconnected"
                         android:textColor="@color/ios_text_primary"
                         android:textSize="12sp" />
-
-                    <TextView
-                        android:id="@+id/latencyTextView"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:background="@drawable/bg_chip_success"
-                        android:paddingStart="10dp"
-                        android:paddingTop="8dp"
-                        android:paddingEnd="10dp"
-                        android:paddingBottom="8dp"
-                        android:text="RTT: -"
-                        android:textColor="@color/ios_text_primary"
-                        android:textSize="12sp" />
                 </LinearLayout>
-
-                <TextView
-                    android:id="@+id/ackTextView"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:background="@drawable/bg_chip_neutral"
-                    android:paddingStart="10dp"
-                    android:paddingTop="8dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="8dp"
-                    android:text="ACK: -"
-                    android:textColor="@color/ios_text_primary"
-                    android:textSize="12sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -164,30 +145,36 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
-                    android:orientation="vertical">
+                    android:orientation="horizontal">
 
                     <RadioButton
                         android:id="@+id/pasteModeCtrlVRadioButton"
-                        android:layout_width="match_parent"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
+                        android:layout_weight="1"
                         android:buttonTint="@color/ios_accent"
                         android:checked="true"
+                        android:maxLines="1"
                         android:text="@string/paste_mode_ctrl_v"
                         android:textColor="@color/ios_text_primary" />
 
                     <RadioButton
                         android:id="@+id/pasteModeCtrlShiftVRadioButton"
-                        android:layout_width="match_parent"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
+                        android:layout_weight="1"
                         android:buttonTint="@color/ios_accent"
+                        android:maxLines="1"
                         android:text="@string/paste_mode_ctrl_shift_v"
                         android:textColor="@color/ios_text_primary" />
 
                     <RadioButton
                         android:id="@+id/pasteModeShiftInsertRadioButton"
-                        android:layout_width="match_parent"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
+                        android:layout_weight="1"
                         android:buttonTint="@color/ios_accent"
+                        android:maxLines="1"
                         android:text="@string/paste_mode_shift_insert"
                         android:textColor="@color/ios_text_primary" />
                 </RadioGroup>

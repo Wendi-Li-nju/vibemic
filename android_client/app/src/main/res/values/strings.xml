@@ -14,4 +14,10 @@
     <string name="paste_mode_ctrl_v">Ctrl+V</string>
     <string name="paste_mode_ctrl_shift_v">Ctrl+Shift+V</string>
     <string name="paste_mode_shift_insert">Shift+Insert</string>
+    <string name="settings">Settings</string>
+    <string name="connection_settings">Connection settings</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="host_required">Host IP is required</string>
+    <string name="valid_port_required">Enter a port from 1 to 65535</string>
 </resources>

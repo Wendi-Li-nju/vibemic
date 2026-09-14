@@ -1,5 +1,6 @@
 package com.realtimeinput.client
 
+import android.app.AlertDialog
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,7 +20,6 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.ArrayDeque
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
@@ -29,18 +29,20 @@ class MainActivity : AppCompatActivity() {
         private const val APPEND_ONLY_WARNING = "Only append-at-cursor sync is supported"
         private const val PREFS_NAME = "rtcs_prefs"
         private const val PREF_PASTE_MODE = "paste_mode"
+        private const val PREF_HOST = "connection_host"
+        private const val PREF_PORT = "connection_port"
+        private const val DEFAULT_HOST = "114.212.82.206"
+        private const val DEFAULT_PORT = "8765"
         private const val PASTE_MODE_CTRL_V = "ctrl_v"
         private const val PASTE_MODE_CTRL_SHIFT_V = "ctrl_shift_v"
         private const val PASTE_MODE_SHIFT_INSERT = "shift_insert"
     }
 
-    private lateinit var hostEditText: EditText
-    private lateinit var portEditText: EditText
+    private lateinit var endpointTextView: TextView
+    private lateinit var connectionSettingsButton: Button
     private lateinit var clearReconnectButton: Button
     private lateinit var connectButton: Button
     private lateinit var statusTextView: TextView
-    private lateinit var latencyTextView: TextView
-    private lateinit var ackTextView: TextView
     private lateinit var inputEditText: EditText
     private lateinit var pasteModeRadioGroup: RadioGroup
 
@@ -60,13 +62,10 @@ class MainActivity : AppCompatActivity() {
     private var token: String = ""
     private var heartbeatIntervalMs: Long = 5000L
     private var localSeq: Int = 0
-    private var sentCount: Int = 0
     private var selectedPasteMode: String = PASTE_MODE_CTRL_V
     private var lastInputSnapshot: String = ""
     private var isProgrammaticInputChange: Boolean = false
     private val pendingAppends: ArrayDeque<String> = ArrayDeque()
-    private val sentAtBySeq = ConcurrentHashMap<Int, Long>()
-    private val pingSentAtByTs = ConcurrentHashMap<Long, Long>()
     private val processInputRunnable = Runnable { maybeProcessInputText() }
 
     private val reconnectRunnable = object : Runnable {
@@ -85,7 +84,6 @@ class MainActivity : AppCompatActivity() {
                 .put("session_id", sessionId)
                 .put("token", token)
                 .put("ts", ts)
-            pingSentAtByTs[ts] = ts
             webSocket?.send(ping.toString())
             uiHandler.postDelayed(this, heartbeatIntervalMs)
         }
@@ -95,21 +93,25 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        hostEditText = findViewById(R.id.hostEditText)
-        portEditText = findViewById(R.id.portEditText)
+        endpointTextView = findViewById(R.id.endpointTextView)
+        connectionSettingsButton = findViewById(R.id.connectionSettingsButton)
         clearReconnectButton = findViewById(R.id.clearReconnectButton)
         connectButton = findViewById(R.id.connectButton)
         statusTextView = findViewById(R.id.statusTextView)
-        latencyTextView = findViewById(R.id.latencyTextView)
-        ackTextView = findViewById(R.id.ackTextView)
         inputEditText = findViewById(R.id.inputEditText)
         pasteModeRadioGroup = findViewById(R.id.pasteModeRadioGroup)
 
-        selectedPasteMode = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        selectedPasteMode = prefs
             .getString(PREF_PASTE_MODE, PASTE_MODE_CTRL_V)
             ?.takeIf { it in setOf(PASTE_MODE_CTRL_V, PASTE_MODE_CTRL_SHIFT_V, PASTE_MODE_SHIFT_INSERT) }
             ?: PASTE_MODE_CTRL_V
         bindPasteModeSelection()
+        updateEndpointSummary()
+
+        connectionSettingsButton.setOnClickListener {
+            showConnectionSettingsDialog()
+        }
 
         connectButton.setOnClickListener {
             if (isConnected) {
@@ -153,16 +155,74 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectInternal() {
-        val host = hostEditText.text.toString().trim()
-        val port = portEditText.text.toString().trim().ifEmpty { "8765" }
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val host = prefs.getString(PREF_HOST, DEFAULT_HOST)?.trim().orEmpty().ifEmpty { DEFAULT_HOST }
+        val port = prefs.getString(PREF_PORT, DEFAULT_PORT)?.trim().orEmpty().ifEmpty { DEFAULT_PORT }
         if (host.isEmpty()) {
             statusTextView.text = "Host IP required"
             return
         }
+        if (!isValidPort(port)) {
+            statusTextView.text = "Valid port required"
+            return
+        }
         val url = "ws://$host:$port/ws"
-        updateStatus("Connecting: $url")
+        updateStatus("Connecting to $host:$port")
         val req = Request.Builder().url(url).build()
         webSocket = okHttpClient.newWebSocket(req, SocketListener())
+    }
+
+    private fun showConnectionSettingsDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_connection_settings, null)
+        val hostEditText = dialogView.findViewById<EditText>(R.id.settingsHostEditText)
+        val portEditText = dialogView.findViewById<EditText>(R.id.settingsPortEditText)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+        hostEditText.setText(prefs.getString(PREF_HOST, DEFAULT_HOST) ?: DEFAULT_HOST)
+        portEditText.setText(prefs.getString(PREF_PORT, DEFAULT_PORT) ?: DEFAULT_PORT)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.connection_settings)
+            .setView(dialogView)
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton(R.string.save, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val host = hostEditText.text.toString().trim()
+                val port = portEditText.text.toString().trim()
+                when {
+                    host.isEmpty() -> hostEditText.error = getString(R.string.host_required)
+                    !isValidPort(port) -> portEditText.error = getString(R.string.valid_port_required)
+                    else -> {
+                        prefs.edit()
+                            .putString(PREF_HOST, host)
+                            .putString(PREF_PORT, port)
+                            .apply()
+                        updateEndpointSummary()
+                        updateStatus(
+                            if (isConnected) "Settings saved; reconnect to apply"
+                            else "Connection settings saved"
+                        )
+                        dialog.dismiss()
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun updateEndpointSummary() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val host = prefs.getString(PREF_HOST, DEFAULT_HOST)?.trim().orEmpty().ifEmpty { DEFAULT_HOST }
+        val port = prefs.getString(PREF_PORT, DEFAULT_PORT)?.trim().orEmpty().ifEmpty { DEFAULT_PORT }
+        endpointTextView.text = "$host:$port"
+    }
+
+    private fun isValidPort(port: String): Boolean {
+        val number = port.toIntOrNull() ?: return false
+        return number in 1..65535
     }
 
     private fun disconnectManual() {
@@ -179,11 +239,7 @@ class MainActivity : AppCompatActivity() {
         inputEditText.setText("")
         isProgrammaticInputChange = false
         lastInputSnapshot = ""
-        sentCount = 0
         pendingAppends.clear()
-        sentAtBySeq.clear()
-        pingSentAtByTs.clear()
-        ackTextView.text = "ACK: -"
         updateStatus("Local input cleared")
     }
 
@@ -239,10 +295,7 @@ class MainActivity : AppCompatActivity() {
         sessionId = ""
         token = ""
         localSeq = 0
-        sentCount = 0
         lastInputSnapshot = inputEditText.text?.toString().orEmpty()
-        sentAtBySeq.clear()
-        pingSentAtByTs.clear()
         connectButton.text = getString(R.string.connect)
         updateStatus(reason)
     }
@@ -279,8 +332,6 @@ class MainActivity : AppCompatActivity() {
         val sent = webSocket?.send(msg.toString()) == true
         if (sent) {
             localSeq = seq
-            sentCount += text.length
-            sentAtBySeq[seq] = now
         } else {
             pendingAppends.addFirst(text)
             updateStatus("Append queued, waiting reconnect")
@@ -301,7 +352,7 @@ class MainActivity : AppCompatActivity() {
     private fun handleMessage(text: String) {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (obj.optString("type")) {
-            "hello_ok" -> updateStatus("Hello ok, waiting auth...")
+            "hello_ok" -> updateStatus("Connected, authorizing...")
             "auth_ok" -> {
                 sessionId = obj.optString("session_id")
                 token = obj.optString("token")
@@ -314,35 +365,24 @@ class MainActivity : AppCompatActivity() {
                 isAuthed = sessionId.isNotEmpty() && token.isNotEmpty()
                 if (isAuthed) {
                     reconnectAttempt = 0
-                    updateStatus("Connected and authenticated")
+                    updateStatus("Connected")
                     uiHandler.removeCallbacks(heartbeatRunnable)
                     uiHandler.postDelayed(heartbeatRunnable, heartbeatIntervalMs)
                     flushPendingAppends()
                 } else {
-                    updateStatus("Auth failed: invalid session")
+                    updateStatus("Authorization failed")
                 }
             }
             "ack" -> {
-                val seq = obj.optInt("seq", -1)
                 val ok = obj.optBoolean("ok", false)
                 val reason = obj.optString("reason")
-                val sentAt = sentAtBySeq.remove(seq)
-                val now = System.currentTimeMillis()
-                val rtt = if (sentAt != null) (now - sentAt) else -1L
-                ackTextView.text = if (ok) {
-                    if (rtt >= 0) "ACK: seq=$seq ok, ${rtt}ms, sent=$sentCount" else "ACK: seq=$seq ok, sent=$sentCount"
-                } else {
-                    "ACK: seq=$seq failed: $reason"
+                if (!ok) {
+                    updateStatus(
+                        if (reason.isNotEmpty()) "Send failed: $reason" else "Send failed"
+                    )
                 }
             }
-            "pong" -> {
-                val ts = obj.optLong("ts", -1L)
-                val sentAt = pingSentAtByTs.remove(ts)
-                if (sentAt != null) {
-                    val rtt = System.currentTimeMillis() - sentAt
-                    latencyTextView.text = "RTT: ${rtt}ms"
-                }
-            }
+            "pong" -> Unit
             "error" -> {
                 updateStatus("Server error: ${obj.optString("reason")}")
             }
@@ -387,7 +427,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 isConnected = true
                 connectButton.text = getString(R.string.disconnect)
-                updateStatus("Socket opened")
+                updateStatus("Connected, signing in...")
                 sendHelloAndAuth()
             }
         }
@@ -403,7 +443,7 @@ class MainActivity : AppCompatActivity() {
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             runOnUiThread {
                 uiHandler.removeCallbacks(heartbeatRunnable)
-                onDisconnected("Socket closed: $reason")
+                onDisconnected(if (reason.isNotEmpty()) "Disconnected: $reason" else "Disconnected")
                 scheduleReconnect()
             }
         }
@@ -411,7 +451,7 @@ class MainActivity : AppCompatActivity() {
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             runOnUiThread {
                 uiHandler.removeCallbacks(heartbeatRunnable)
-                onDisconnected("Socket error: ${t.message ?: "unknown"}")
+                onDisconnected("Connection error: ${t.message ?: "unknown"}")
                 scheduleReconnect()
             }
         }

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingStart="24dp"
+    android:paddingTop="8dp"
+    android:paddingEnd="24dp"
+    android:paddingBottom="8dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/hint_host"
+        android:textColor="@color/ios_text_secondary"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <EditText
+        android:id="@+id/settingsHostEditText"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="6dp"
+        android:background="@drawable/bg_input_box"
+        android:hint="@string/hint_host"
+        android:inputType="textNoSuggestions"
+        android:maxLines="1"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:selectAllOnFocus="true"
+        android:textColor="@color/ios_text_primary"
+        android:textColorHint="@color/ios_text_secondary" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="@string/hint_port"
+        android:textColor="@color/ios_text_secondary"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <EditText
+        android:id="@+id/settingsPortEditText"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="6dp"
+        android:background="@drawable/bg_input_box"
+        android:hint="@string/hint_port"
+        android:inputType="number"
+        android:maxLines="1"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:selectAllOnFocus="true"
+        android:textColor="@color/ios_text_primary"
+        android:textColorHint="@color/ios_text_secondary" />
+
+</LinearLayout>
