@@ -191,6 +191,28 @@ class ServerFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ack["ok"])
         self.assertEqual(ack["reason"], "no_active_session")
 
+    async def test_expired_session_can_reauth_on_same_socket(self) -> None:
+        first_auth = await self._auth()
+        self.host.session_mgr.active.last_seen_ms -= 2000  # type: ignore[union-attr]
+        self.assertTrue(self.host.session_mgr.check_timeout())
+
+        await self.host._dispatch(self.ws, self.state, '{"type":"auth"}')
+        second_auth = self.ws.sent[-1]
+        self.assertEqual(second_auth["type"], "auth_ok")
+        self.assertNotEqual(first_auth["session_id"], second_auth["session_id"])
+
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            (
+                '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"text":"b","ts":%d}'
+                % (second_auth["session_id"], second_auth["token"], int(time.time() * 1000))
+            ),
+        )
+        ack = self.ws.sent[-1]
+        self.assertTrue(ack["ok"])
+        self.assertEqual(self.injector.applied, ["b"])
+
     async def test_1000_char_stream(self) -> None:
         auth_ok = await self._auth()
         for seq in range(1, 1001):

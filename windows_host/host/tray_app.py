@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--session-timeout-ms",
         type=int,
-        default=15000,
+        default=120000,
         help="Session timeout in milliseconds",
     )
     parser.add_argument("--log-level", default="INFO")

@@ -65,7 +65,9 @@ class MainActivity : AppCompatActivity() {
     private var selectedPasteMode: String = PASTE_MODE_CTRL_V
     private var lastInputSnapshot: String = ""
     private var isProgrammaticInputChange: Boolean = false
+    private var reauthInProgress: Boolean = false
     private val pendingAppends: ArrayDeque<String> = ArrayDeque()
+    private val unackedAppends: LinkedHashMap<Int, String> = LinkedHashMap()
     private val processInputRunnable = Runnable { maybeProcessInputText() }
 
     private val reconnectRunnable = object : Runnable {
@@ -78,14 +80,10 @@ class MainActivity : AppCompatActivity() {
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
             if (!isConnected || !isAuthed) return
-            val ts = System.currentTimeMillis()
-            val ping = JSONObject()
-                .put("type", "ping")
-                .put("session_id", sessionId)
-                .put("token", token)
-                .put("ts", ts)
-            webSocket?.send(ping.toString())
-            uiHandler.postDelayed(this, heartbeatIntervalMs)
+            sendHeartbeatNow()
+            if (isConnected && isAuthed) {
+                uiHandler.postDelayed(this, heartbeatIntervalMs)
+            }
         }
     }
 
@@ -143,6 +141,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (isConnected && isAuthed) {
+            sendHeartbeatNow()
+        } else if (shouldReconnect && !isConnected) {
+            scheduleReconnect()
+        }
     }
 
     override fun onDestroy() {
@@ -240,7 +247,11 @@ class MainActivity : AppCompatActivity() {
         isProgrammaticInputChange = false
         lastInputSnapshot = ""
         pendingAppends.clear()
+        unackedAppends.clear()
         updateStatus("Local input cleared")
+        if (isConnected && isAuthed) {
+            sendHeartbeatNow()
+        }
     }
 
     private fun maybeProcessInputText() {
@@ -280,6 +291,42 @@ class MainActivity : AppCompatActivity() {
         uiHandler.postDelayed(processInputRunnable, delayMs)
     }
 
+    private fun sendHeartbeatNow(): Boolean {
+        if (!isConnected || !isAuthed || sessionId.isEmpty() || token.isEmpty()) return false
+        val ts = System.currentTimeMillis()
+        val ping = JSONObject()
+            .put("type", "ping")
+            .put("session_id", sessionId)
+            .put("token", token)
+            .put("ts", ts)
+        return webSocket?.send(ping.toString()) == true
+    }
+
+    private fun isSessionExpiredReason(reason: String): Boolean {
+        return reason == "no_active_session" || reason == "invalid_session"
+    }
+
+    private fun recoverExpiredSession() {
+        if (!isConnected || reauthInProgress) return
+        reauthInProgress = true
+        isAuthed = false
+        sessionId = ""
+        token = ""
+        localSeq = 0
+        uiHandler.removeCallbacks(heartbeatRunnable)
+
+        if (unackedAppends.isNotEmpty()) {
+            val appends = unackedAppends.entries.sortedBy { it.key }.map { it.value }
+            unackedAppends.clear()
+            for (index in appends.indices.reversed()) {
+                pendingAppends.addFirst(appends[index])
+            }
+        }
+
+        updateStatus("Session expired, reauthorizing...")
+        sendHelloAndAuth()
+    }
+
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
         reconnectAttempt += 1
@@ -295,6 +342,8 @@ class MainActivity : AppCompatActivity() {
         sessionId = ""
         token = ""
         localSeq = 0
+        reauthInProgress = false
+        unackedAppends.clear()
         lastInputSnapshot = inputEditText.text?.toString().orEmpty()
         connectButton.text = getString(R.string.connect)
         updateStatus(reason)
@@ -304,7 +353,7 @@ class MainActivity : AppCompatActivity() {
         val hello = JSONObject()
             .put("type", "hello")
             .put("client_id", clientId)
-            .put("app_ver", "1.0.0")
+            .put("app_ver", "1.0.1")
         webSocket?.send(hello.toString())
         val auth = JSONObject()
             .put("type", "auth")
@@ -332,6 +381,7 @@ class MainActivity : AppCompatActivity() {
         val sent = webSocket?.send(msg.toString()) == true
         if (sent) {
             localSeq = seq
+            unackedAppends[seq] = text
         } else {
             pendingAppends.addFirst(text)
             updateStatus("Append queued, waiting reconnect")
@@ -364,6 +414,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 isAuthed = sessionId.isNotEmpty() && token.isNotEmpty()
                 if (isAuthed) {
+                    reauthInProgress = false
                     reconnectAttempt = 0
                     updateStatus("Connected")
                     uiHandler.removeCallbacks(heartbeatRunnable)
@@ -374,9 +425,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             "ack" -> {
+                val seq = obj.optInt("seq", -1)
                 val ok = obj.optBoolean("ok", false)
                 val reason = obj.optString("reason")
-                if (!ok) {
+                if (ok) {
+                    unackedAppends.remove(seq)
+                } else if (isSessionExpiredReason(reason)) {
+                    recoverExpiredSession()
+                } else {
+                    unackedAppends.remove(seq)
                     updateStatus(
                         if (reason.isNotEmpty()) "Send failed: $reason" else "Send failed"
                     )
@@ -384,7 +441,12 @@ class MainActivity : AppCompatActivity() {
             }
             "pong" -> Unit
             "error" -> {
-                updateStatus("Server error: ${obj.optString("reason")}")
+                val reason = obj.optString("reason")
+                if (isSessionExpiredReason(reason)) {
+                    recoverExpiredSession()
+                } else {
+                    updateStatus("Server error: $reason")
+                }
             }
         }
     }

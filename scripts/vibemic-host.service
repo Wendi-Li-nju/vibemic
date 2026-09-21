@@ -13,6 +13,7 @@ Environment=XDG_SESSION_TYPE=x11
 ExecStart=/usr/bin/python /home/lwd/codes/my-tools/apps/VibeMic/windows_host/run_host.py --bind 0.0.0.0 --port 8765 --log-level INFO
 Restart=on-failure
 RestartSec=2
+TimeoutStopSec=5
 
 [Install]
 WantedBy=graphical-session.target
