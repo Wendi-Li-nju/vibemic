@@ -11,6 +11,8 @@ Python host service for VibeMic. It receives phone-side text over WebSocket and 
 - Unicode text validation; transport-level control chars remain rejected while the Android client normalizes IME control characters before send.
 - Heartbeat with a 120-second default session timeout.
 - Single active phone session.
+- Stable host `server_id` returned by `/health` and `hello_ok`, allowing Android to verify that different IP endpoints belong to the same machine.
+- Optional `_vibemic._tcp` mDNS/DNS-SD advertisement on Linux via `deploy/avahi/vibemic.service` for dynamic LAN endpoint discovery.
 
 ## Role in the product
 
@@ -58,7 +60,7 @@ On startup, the host logs the endpoint.
 ## Endpoints
 
 - `ws://<host>:8765/ws` WebSocket endpoint.
-- `http://<host>:8765/health` health and runtime stats.
+- `http://<host>:8765/health` health, stable `server_id`, and runtime stats.
 
 ## Injection behavior
 

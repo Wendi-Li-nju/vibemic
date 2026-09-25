@@ -55,4 +55,23 @@
         android:textColor="@color/ios_text_primary"
         android:textColorHint="@color/ios_text_secondary" />
 
+    <CheckBox
+        android:id="@+id/settingsAutoSelectCheckBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:buttonTint="@color/ios_accent"
+        android:checked="true"
+        android:text="@string/auto_select_network"
+        android:textColor="@color/ios_text_primary"
+        android:textSize="15sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="@string/auto_select_network_hint"
+        android:textColor="@color/ios_text_secondary"
+        android:textSize="12sp" />
+
 </LinearLayout>

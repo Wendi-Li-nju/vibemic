@@ -8,6 +8,7 @@ from typing import Optional
 
 from .config import HostConfig
 from .dedupe import default_applied_ops_path
+from .identity import default_server_id_path
 from .service import HostService
 
 
@@ -46,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         "--applied-ops-path",
         default=str(default_applied_ops_path()),
         help="Persistent dedupe ledger for safely retried append operations",
+    )
+    parser.add_argument(
+        "--server-id-path",
+        default=str(default_server_id_path()),
+        help="Persistent VibeMic server identity shared across network interfaces",
     )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
@@ -118,6 +124,7 @@ def run() -> None:
         heartbeat_interval_ms=args.heartbeat_interval_ms,
         session_timeout_ms=args.session_timeout_ms,
         applied_ops_path=args.applied_ops_path,
+        server_id_path=args.server_id_path,
     )
     app = TrayHostApp(config)
     app.run()

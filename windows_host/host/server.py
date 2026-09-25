@@ -68,6 +68,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for constrained test 
 from .config import HostConfig
 from .dedupe import AppliedOpLedger
 from .injector import TextInjector, create_default_injector
+from .identity import load_or_create_server_id
 from .protocol import ProtocolError, normalize_paste_mode, parse_insert, parse_message, parse_replace
 from .session import SessionManager
 
@@ -111,6 +112,8 @@ class RealtimeHost:
         self.session_mgr = SessionManager(timeout_ms=self.config.session_timeout_ms)
         ledger_path = Path(self.config.applied_ops_path) if self.config.applied_ops_path else None
         self.applied_ops = AppliedOpLedger(path=ledger_path)
+        server_id_path = Path(self.config.server_id_path) if self.config.server_id_path else None
+        self.server_id = load_or_create_server_id(server_id_path)
         self.stats = HostStats()
         self._inject_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtcs-inject")
         self._replace_lock = asyncio.Lock()
@@ -157,6 +160,8 @@ class RealtimeHost:
         return web.json_response(
             {
                 "ok": True,
+                "server_id": self.server_id,
+                "server_name": "4090",
                 "session_active": self.session_mgr.active is not None,
                 "stats": asdict(self.stats),
             }
@@ -350,7 +355,15 @@ class RealtimeHost:
             return
         state["hello_ok"] = True
         state["client_id"] = client_id
-        await self._emit(ws, state, {"type": "hello_ok"})
+        await self._emit(
+            ws,
+            state,
+            {
+                "type": "hello_ok",
+                "server_id": self.server_id,
+                "server_name": "4090",
+            },
+        )
 
     async def _on_auth(self, ws: web.WebSocketResponse, state: dict[str, Any], obj: dict[str, Any]) -> None:
         if not state.get("hello_ok"):

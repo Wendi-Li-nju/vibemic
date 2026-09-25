@@ -21,13 +21,14 @@ The current MVP is text-first rather than raw-audio transport. The Android side 
 - Supports single-device sessions with sequence-checked delivery, heartbeat monitoring, persistent phone-side delivery queues, and stable-operation deduplication.
 - Preserves long phone drafts across control-character normalization, disconnects, stale sessions, ACK loss, and app restarts instead of rolling input back.
 - Lets the Android client choose Linux paste mode explicitly: `Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert`.
+- Treats a multi-homed host as one verified VibeMic server: Android 1.2 can automatically choose between known/direct endpoints (for example NJU and Cosec), discover the local LAN endpoint over mDNS, and remember successful routes under one stable `server_id`.
 
 ## Current scope and limitations
 
 - Current MVP is append-only desktop text insertion.
 - Non-append edits stay local to the Android input box; future appended text can continue syncing from the new local baseline.
 - Plain text only. IME composition is preserved locally and sent after commit; desktop control keys such as `Enter`, `Delete`, or arrows are not transported.
-- LAN or Tailscale networking only.
+- Direct IP, LAN/mDNS, or Tailscale networking; VibeMic does not depend on a cloud relay.
 - Linux support currently targets X11, not Wayland.
 - The project direction is "phone as vibe mic", but the current transport layer sends text, not microphone audio frames.
 
@@ -52,8 +53,8 @@ The current MVP is text-first rather than raw-audio transport. The Android side 
    python windows_host/run_host.py --bind 0.0.0.0 --port 8765
    ```
 
-4. Open the Android app and connect to `ws://<host-ip>:8765/ws`.
-5. Make sure the phone can reach the host either on the same LAN or through Tailscale.
+4. Open the Android app. The configured host/port is a bootstrap address; with **Auto-select reachable 4090 network** enabled, the app can switch among verified endpoints of the same host.
+5. On a local LAN, install `deploy/avahi/vibemic.service` under `/etc/avahi/services/` so Android can discover the current local endpoint. Known NJU/Cosec endpoints remain fallback routes.
 6. Speak or type on the phone, then let the desktop host inject the resulting text at the active cursor.
 
 ## Typical use case

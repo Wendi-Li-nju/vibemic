@@ -1,6 +1,12 @@
 package com.realtimeinput.client
 
 import android.app.AlertDialog
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -8,6 +14,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.inputmethod.BaseInputConnection
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.TextView
@@ -18,7 +25,9 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.net.Inet4Address
 import java.util.ArrayDeque
+import java.util.LinkedHashMap
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -36,8 +45,16 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_SYNC_BASELINE = "local_sync_baseline"
         private const val PREF_DELIVERY_QUEUE = "delivery_queue"
         private const val PREF_CLIENT_ID = "client_id"
+        private const val PREF_AUTO_SELECT = "auto_select_network"
+        private const val PREF_SERVER_ID = "server_id"
+        private const val PREF_LAST_ENDPOINT = "last_endpoint"
+        private const val PREF_KNOWN_ENDPOINTS = "known_endpoints"
         private const val DEFAULT_HOST = "114.212.82.206"
+        private const val DEFAULT_COSEC_HOST = "192.168.1.166"
         private const val DEFAULT_PORT = "8765"
+        private const val MDNS_SERVICE_TYPE = "_vibemic._tcp."
+        private const val MDNS_DISCOVERY_GRACE_MS = 1200L
+        private const val CONNECT_TIMEOUT_MS = 2500L
         private const val PASTE_MODE_CTRL_V = "ctrl_v"
         private const val PASTE_MODE_CTRL_SHIFT_V = "ctrl_shift_v"
         private const val PASTE_MODE_SHIFT_INSERT = "shift_insert"
@@ -54,6 +71,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var clientId: String
     private val uiHandler = Handler(Looper.getMainLooper())
     private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
@@ -64,6 +82,14 @@ class MainActivity : AppCompatActivity() {
     private var reconnectAttempt = 0
     private var shouldReconnect = false
     private var socketGeneration = 0L
+    private val connectionCandidates: ArrayDeque<ServerEndpoint> = ArrayDeque()
+    private val discoveredEndpoints: LinkedHashMap<String, ServerEndpoint> = LinkedHashMap()
+    private var activeEndpoint: ServerEndpoint? = null
+    private var connectedServerId: String = ""
+    private var discoveryStarted = false
+    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+    private var autoDiscoveryGraceUsed = false
 
     private var sessionId: String = ""
     private var token: String = ""
@@ -130,6 +156,9 @@ class MainActivity : AppCompatActivity() {
         bindPasteModeSelection()
         updateEndpointSummary()
         restorePersistentInputState()
+        if (prefs.getBoolean(PREF_AUTO_SELECT, true)) {
+            startNetworkDiscovery()
+        }
 
         connectionSettingsButton.setOnClickListener {
             showConnectionSettingsDialog()
@@ -140,6 +169,8 @@ class MainActivity : AppCompatActivity() {
                 disconnectManual()
             } else {
                 shouldReconnect = true
+                connectionCandidates.clear()
+                autoDiscoveryGraceUsed = false
                 connectInternal()
             }
         }
@@ -194,6 +225,7 @@ class MainActivity : AppCompatActivity() {
         webSocket = null
         isConnecting = false
         socket?.close(1000, "Activity destroy")
+        stopNetworkDiscovery()
         okHttpClient.dispatcher.executorService.shutdown()
         super.onDestroy()
     }
@@ -201,32 +233,123 @@ class MainActivity : AppCompatActivity() {
     private fun connectInternal() {
         if (isConnected || isConnecting) return
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val host = prefs.getString(PREF_HOST, DEFAULT_HOST)?.trim().orEmpty().ifEmpty { DEFAULT_HOST }
-        val port = prefs.getString(PREF_PORT, DEFAULT_PORT)?.trim().orEmpty().ifEmpty { DEFAULT_PORT }
-        if (host.isEmpty()) {
-            statusTextView.text = "Host IP required"
+        if (
+            prefs.getBoolean(PREF_AUTO_SELECT, true) &&
+            !autoDiscoveryGraceUsed &&
+            discoveredEndpoints.isEmpty() &&
+            discoveryListener != null
+        ) {
+            autoDiscoveryGraceUsed = true
+            updateStatus("Looking for a direct 4090 route...")
+            uiHandler.postDelayed({ connectInternal() }, MDNS_DISCOVERY_GRACE_MS)
             return
         }
-        if (!isValidPort(port)) {
-            statusTextView.text = "Valid port required"
+        if (connectionCandidates.isEmpty()) {
+            connectionCandidates.addAll(buildConnectionCandidates())
+        }
+        val endpoint = connectionCandidates.pollFirst()
+        if (endpoint == null) {
+            scheduleReconnect()
             return
         }
-        val url = "ws://$host:$port/ws"
-        updateStatus("Connecting to $host:$port")
+
+        activeEndpoint = endpoint
+        updateEndpointSummary()
+        updateStatus("Connecting via ${endpoint.networkLabel()} · ${endpoint.host}:${endpoint.port}")
         isConnecting = true
         val generation = ++socketGeneration
-        val req = Request.Builder().url(url).build()
-        webSocket = okHttpClient.newWebSocket(req, SocketListener(generation))
+        val req = Request.Builder().url(endpoint.webSocketUrl()).build()
+        webSocket = clientForEndpoint(endpoint).newWebSocket(req, SocketListener(generation))
+    }
+
+    @Suppress("DEPRECATION")
+    private fun clientForEndpoint(endpoint: ServerEndpoint): OkHttpClient {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (!prefs.getBoolean(PREF_AUTO_SELECT, true)) return okHttpClient
+        if (endpoint.networkLabel() == "Tailscale") return okHttpClient
+        val connectivity = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val wifiNetwork = connectivity.allNetworks.firstOrNull { network ->
+            val caps = connectivity.getNetworkCapabilities(network)
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } ?: return okHttpClient
+        return okHttpClient.newBuilder()
+            .socketFactory(wifiNetwork.socketFactory)
+            .build()
+    }
+
+    private fun buildConnectionCandidates(): List<ServerEndpoint> {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val bootstrapHost = prefs.getString(PREF_HOST, DEFAULT_HOST)?.trim().orEmpty().ifEmpty { DEFAULT_HOST }
+        val bootstrapPort = prefs.getString(PREF_PORT, DEFAULT_PORT)?.toIntOrNull() ?: DEFAULT_PORT.toInt()
+        val bootstrap = ServerEndpoint(bootstrapHost, bootstrapPort, "bootstrap")
+        if (!prefs.getBoolean(PREF_AUTO_SELECT, true)) {
+            return listOf(bootstrap)
+        }
+
+        val last = ServerEndpointCodec.decode(prefs.getString(PREF_LAST_ENDPOINT, "").orEmpty())
+        val known = ServerEndpointCodec.decode(prefs.getString(PREF_KNOWN_ENDPOINTS, "").orEmpty())
+        val defaults = listOf(
+            ServerEndpoint(DEFAULT_HOST, DEFAULT_PORT.toInt(), "default"),
+            ServerEndpoint(DEFAULT_COSEC_HOST, DEFAULT_PORT.toInt(), "default"),
+        )
+        return ServerEndpointSelector.build(
+            autoSelect = true,
+            discovered = discoveredEndpoints.values.toList(),
+            last = last,
+            bootstrap = bootstrap,
+            known = known,
+            defaults = defaults,
+        )
+    }
+
+    private fun enqueueDiscoveredEndpoint(endpoint: ServerEndpoint) {
+        val current = activeEndpoint
+        if (current?.key == endpoint.key) return
+        if (connectionCandidates.none { it.key == endpoint.key }) {
+            connectionCandidates.addFirst(endpoint)
+        }
+
+        val shouldPreferDirectCosec = ServerEndpointSelector.shouldSwitchToDiscovered(
+            current = current,
+            discovered = endpoint,
+            connectionActive = isConnected || isConnecting,
+        )
+
+        if (shouldPreferDirectCosec && current != null) {
+            if (connectionCandidates.none { it.key == current.key }) {
+                connectionCandidates.addLast(current.copy(source = "fallback"))
+            }
+            uiHandler.removeCallbacks(reconnectRunnable)
+            restartConnection("Direct Cosec route discovered; switching safely...")
+            return
+        }
+
+        if (shouldReconnect && !isConnected && !isConnecting) {
+            connectInternal()
+        }
+    }
+
+    private fun tryNextCandidateOrSchedule(reason: String) {
+        onDisconnected(reason)
+        if (!shouldReconnect) return
+        if (connectionCandidates.isNotEmpty()) {
+            uiHandler.postDelayed({ connectInternal() }, 120L)
+        } else {
+            autoDiscoveryGraceUsed = false
+            scheduleReconnect()
+        }
     }
 
     private fun showConnectionSettingsDialog() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_connection_settings, null)
         val hostEditText = dialogView.findViewById<EditText>(R.id.settingsHostEditText)
         val portEditText = dialogView.findViewById<EditText>(R.id.settingsPortEditText)
+        val autoSelectCheckBox = dialogView.findViewById<CheckBox>(R.id.settingsAutoSelectCheckBox)
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         hostEditText.setText(prefs.getString(PREF_HOST, DEFAULT_HOST) ?: DEFAULT_HOST)
         portEditText.setText(prefs.getString(PREF_PORT, DEFAULT_PORT) ?: DEFAULT_PORT)
+        autoSelectCheckBox.isChecked = prefs.getBoolean(PREF_AUTO_SELECT, true)
 
         val dialog = AlertDialog.Builder(this)
             .setTitle(R.string.connection_settings)
@@ -243,10 +366,28 @@ class MainActivity : AppCompatActivity() {
                     host.isEmpty() -> hostEditText.error = getString(R.string.host_required)
                     !isValidPort(port) -> portEditText.error = getString(R.string.valid_port_required)
                     else -> {
-                        prefs.edit()
+                        val oldHost = prefs.getString(PREF_HOST, DEFAULT_HOST).orEmpty()
+                        val oldPort = prefs.getString(PREF_PORT, DEFAULT_PORT).orEmpty()
+                        val bootstrapChanged = oldHost != host || oldPort != port
+                        val editor = prefs.edit()
                             .putString(PREF_HOST, host)
                             .putString(PREF_PORT, port)
-                            .apply()
+                            .putBoolean(PREF_AUTO_SELECT, autoSelectCheckBox.isChecked)
+                        if (bootstrapChanged) {
+                            editor.remove(PREF_SERVER_ID)
+                                .remove(PREF_LAST_ENDPOINT)
+                                .remove(PREF_KNOWN_ENDPOINTS)
+                            connectedServerId = ""
+                            activeEndpoint = null
+                        }
+                        editor.apply()
+                        connectionCandidates.clear()
+                        autoDiscoveryGraceUsed = false
+                        if (autoSelectCheckBox.isChecked) {
+                            startNetworkDiscovery()
+                        } else {
+                            stopNetworkDiscovery()
+                        }
                         updateEndpointSummary()
                         updateStatus(
                             if (isConnected) "Settings saved; reconnect to apply"
@@ -262,9 +403,118 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateEndpointSummary() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val endpoint = activeEndpoint ?: ServerEndpointCodec
+            .decode(prefs.getString(PREF_LAST_ENDPOINT, "").orEmpty())
+            .firstOrNull()
+        if (endpoint != null && prefs.getBoolean(PREF_AUTO_SELECT, true)) {
+            endpointTextView.text = "4090 · ${endpoint.networkLabel()} · ${endpoint.host}:${endpoint.port}"
+            return
+        }
         val host = prefs.getString(PREF_HOST, DEFAULT_HOST)?.trim().orEmpty().ifEmpty { DEFAULT_HOST }
         val port = prefs.getString(PREF_PORT, DEFAULT_PORT)?.trim().orEmpty().ifEmpty { DEFAULT_PORT }
-        endpointTextView.text = "$host:$port"
+        endpointTextView.text = if (prefs.getBoolean(PREF_AUTO_SELECT, true)) {
+            "4090 · Auto · $host:$port"
+        } else {
+            "$host:$port"
+        }
+    }
+
+    private fun rememberSuccessfulEndpoint() {
+        val endpoint = activeEndpoint ?: return
+        if (connectedServerId.isEmpty()) return
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val known = ServerEndpointCodec
+            .decode(prefs.getString(PREF_KNOWN_ENDPOINTS, "").orEmpty())
+            .plus(endpoint.copy(source = "verified"))
+            .distinctBy { it.key }
+            .takeLast(12)
+        prefs.edit()
+            .putString(PREF_SERVER_ID, connectedServerId)
+            .putString(PREF_LAST_ENDPOINT, ServerEndpointCodec.encode(listOf(endpoint.copy(source = "last"))))
+            .putString(PREF_KNOWN_ENDPOINTS, ServerEndpointCodec.encode(known))
+            .commit()
+        updateEndpointSummary()
+    }
+
+    private fun startNetworkDiscovery() {
+        if (discoveryStarted || discoveryListener != null || !getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getBoolean(PREF_AUTO_SELECT, true)) return
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        if (multicastLock == null) {
+            multicastLock = wifiManager?.createMulticastLock("VibeMic-mDNS")?.apply {
+                setReferenceCounted(false)
+                runCatching { acquire() }
+            }
+        } else if (multicastLock?.isHeld == false) {
+            runCatching { multicastLock?.acquire() }
+        }
+
+        val nsdManager = getSystemService(Context.NSD_SERVICE) as NsdManager
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(serviceType: String) {
+                discoveryStarted = true
+            }
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                if (!serviceInfo.serviceType.startsWith("_vibemic._tcp")) return
+                if (!serviceInfo.serviceName.startsWith("VibeMic 4090")) return
+                @Suppress("DEPRECATION")
+                nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
+
+                    override fun onServiceResolved(resolved: NsdServiceInfo) {
+                        val address = resolved.host
+                        val host = if (address is Inet4Address) address.hostAddress else null
+                        val port = resolved.port
+                        if (host.isNullOrBlank() || port !in 1..65535) return
+                        val endpoint = ServerEndpoint(host, port, "mdns")
+                        runOnUiThread {
+                            discoveredEndpoints[resolved.serviceName] = endpoint
+                            enqueueDiscoveredEndpoint(endpoint)
+                        }
+                    }
+                })
+            }
+
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                runOnUiThread { discoveredEndpoints.remove(serviceInfo.serviceName) }
+            }
+
+            override fun onDiscoveryStopped(serviceType: String) {
+                discoveryStarted = false
+            }
+
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                discoveryStarted = false
+                discoveryListener = null
+                multicastLock?.let { lock -> if (lock.isHeld) runCatching { lock.release() } }
+                multicastLock = null
+                runCatching { nsdManager.stopServiceDiscovery(this) }
+            }
+
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                discoveryStarted = false
+            }
+        }
+        discoveryListener = listener
+        runCatching {
+            nsdManager.discoverServices(MDNS_SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+        }.onFailure {
+            discoveryStarted = false
+            discoveryListener = null
+        }
+    }
+
+    private fun stopNetworkDiscovery() {
+        val listener = discoveryListener
+        if (listener != null) {
+            val nsdManager = getSystemService(Context.NSD_SERVICE) as NsdManager
+            runCatching { nsdManager.stopServiceDiscovery(listener) }
+        }
+        discoveryListener = null
+        discoveryStarted = false
+        discoveredEndpoints.clear()
+        multicastLock?.let { lock -> if (lock.isHeld) runCatching { lock.release() } }
+        multicastLock = null
     }
 
     private fun isValidPort(port: String): Boolean {
@@ -281,8 +531,12 @@ class MainActivity : AppCompatActivity() {
         val socket = webSocket
         webSocket = null
         isConnecting = false
+        connectionCandidates.clear()
+        autoDiscoveryGraceUsed = false
+        activeEndpoint = null
         socket?.close(1000, "Manual disconnect")
         onDisconnected("Disconnected")
+        updateEndpointSummary()
     }
 
     private fun requestClearLocalInput() {
@@ -462,7 +716,7 @@ class MainActivity : AppCompatActivity() {
         uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
         persistDeliveryState(sync = false)
         updateStatus("Connection state changed; text kept. Reauthorizing...")
-        if (!sendHelloAndAuth()) {
+        if (!sendHello()) {
             restartConnection("Connection stalled; reconnecting...")
         }
     }
@@ -484,6 +738,7 @@ class MainActivity : AppCompatActivity() {
         token = ""
         localSeq = 0
         reauthInProgress = false
+        connectedServerId = ""
         inflightOp = null
         inflightSeq = 0
         uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
@@ -499,22 +754,24 @@ class MainActivity : AppCompatActivity() {
         val socket = webSocket
         webSocket = null
         socket?.cancel()
-        onDisconnected(reason)
-        if (shouldReconnect) {
-            scheduleReconnect()
-        }
+        tryNextCandidateOrSchedule(reason)
     }
 
-    private fun sendHelloAndAuth(): Boolean {
+    private fun sendHello(): Boolean {
         val socket = webSocket ?: return false
         val hello = JSONObject()
             .put("type", "hello")
             .put("client_id", clientId)
-            .put("app_ver", "1.1.0")
+            .put("app_ver", "1.2.0")
+        return socket.send(hello.toString())
+    }
+
+    private fun sendAuth(): Boolean {
+        val socket = webSocket ?: return false
         val auth = JSONObject()
             .put("type", "auth")
             .put("paste_mode", selectedPasteMode)
-        return socket.send(hello.toString()) && socket.send(auth.toString())
+        return socket.send(auth.toString())
     }
 
     private fun drainDeliveryQueue() {
@@ -554,7 +811,24 @@ class MainActivity : AppCompatActivity() {
     private fun handleMessage(text: String) {
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return
         when (obj.optString("type")) {
-            "hello_ok" -> updateStatus("Connected, authorizing...")
+            "hello_ok" -> {
+                val serverId = obj.optString("server_id")
+                if (serverId.isEmpty()) {
+                    restartConnection("Endpoint has no stable server identity; trying another route")
+                    return
+                }
+                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                val expectedServerId = prefs.getString(PREF_SERVER_ID, "").orEmpty()
+                if (expectedServerId.isNotEmpty() && expectedServerId != serverId) {
+                    restartConnection("Different VibeMic server found; trying another 4090 route")
+                    return
+                }
+                connectedServerId = serverId
+                updateStatus("4090 verified via ${activeEndpoint?.networkLabel() ?: "network"}; authorizing...")
+                if (!sendAuth()) {
+                    restartConnection("Connection stalled; trying another 4090 route")
+                }
+            }
             "auth_ok" -> {
                 sessionId = obj.optString("session_id")
                 token = obj.optString("token")
@@ -568,6 +842,8 @@ class MainActivity : AppCompatActivity() {
                 if (isAuthed) {
                     reauthInProgress = false
                     reconnectAttempt = 0
+                    rememberSuccessfulEndpoint()
+                    connectionCandidates.clear()
                     updateStatus(
                         if (deliveryQueue.isNotEmpty()) "Connected; resuming pending delivery"
                         else "Connected"
@@ -676,9 +952,9 @@ class MainActivity : AppCompatActivity() {
                 isConnecting = false
                 isConnected = true
                 connectButton.text = getString(R.string.disconnect)
-                updateStatus("Connected, signing in...")
-                if (!sendHelloAndAuth()) {
-                    restartConnection("Connection stalled; reconnecting safely")
+                updateStatus("Connected, checking 4090 identity...")
+                if (!sendHello()) {
+                    restartConnection("Connection stalled; trying another 4090 route")
                 }
             }
         }
@@ -700,10 +976,7 @@ class MainActivity : AppCompatActivity() {
                 if (!isCurrentSocket(generation, webSocket)) return@runOnUiThread
                 this@MainActivity.webSocket = null
                 uiHandler.removeCallbacks(heartbeatRunnable)
-                onDisconnected("Disconnected; text kept for retry")
-                if (shouldReconnect) {
-                    scheduleReconnect()
-                }
+                tryNextCandidateOrSchedule("Route disconnected; text kept for retry")
             }
         }
 
@@ -712,10 +985,7 @@ class MainActivity : AppCompatActivity() {
                 if (!isCurrentSocket(generation, webSocket)) return@runOnUiThread
                 this@MainActivity.webSocket = null
                 uiHandler.removeCallbacks(heartbeatRunnable)
-                onDisconnected("Connection interrupted; text kept for retry")
-                if (shouldReconnect) {
-                    scheduleReconnect()
-                }
+                tryNextCandidateOrSchedule("Route unavailable; trying another 4090 route")
             }
         }
     }

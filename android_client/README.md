@@ -8,9 +8,10 @@ This client is intended to make the phone a practical nearby input device for re
 
 ## MVP Behavior
 
-- User configures `host ip` and `port`.
-- App connects to `ws://<host>:<port>/ws`.
-- Sends `hello`, then `auth`.
+- User configures a bootstrap `host ip` and `port`; this is not restricted to the only usable route.
+- With Auto-select enabled (default), the app treats NJU/Cosec addresses as endpoints of one logical 4090 server, prefers an mDNS-discovered local route, remembers successful verified endpoints, and falls back across candidates automatically.
+- Auto mode binds ordinary direct endpoints to the physical Wi-Fi network when available, so a phone VPN does not accidentally hijack NJU/Cosec local traffic. Tailscale endpoints continue using the system/VPN route.
+- Sends `hello`, verifies the host's stable `server_id`, then sends `auth`.
 - Lets the user explicitly choose Linux paste shortcut mode.
 - Each append is first written to a persistent FIFO, then sent as a `text_insert` suffix with strictly increasing `seq` and a stable `op_id`.
 - Only one append is in flight; an item leaves the queue only after a matching successful ACK.
@@ -37,4 +38,4 @@ cd android_client
 - Desktop sync is append-only; delete/replace edits stay local, become the new baseline, and future appended text can continue syncing.
 - For Linux targets, the app can force `Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert` instead of relying on host-side auto detection.
 - No desktop control-key transport (`Enter`, `Delete`, arrow keys). IME composition is retained locally and synced only after composition commits.
-- Networking is limited to LAN or Tailscale-style private connectivity.
+- Networking uses direct IP, LAN/mDNS, or Tailscale-style connectivity; there is no VibeMic cloud relay.

@@ -163,6 +163,17 @@ class ServerFlowTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await host.close()
 
+    async def test_hello_returns_server_identity(self) -> None:
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            '{"type":"hello","client_id":"android-test","app_ver":"1.2.0"}',
+        )
+        hello_ok = self.ws.sent[-1]
+        self.assertEqual(hello_ok["type"], "hello_ok")
+        self.assertEqual(hello_ok["server_id"], self.host.server_id)
+        self.assertEqual(hello_ok["server_name"], "4090")
+
     async def test_out_of_order_rejected(self) -> None:
         auth_ok = await self._auth()
         await self.host._dispatch(

@@ -12,6 +12,10 @@ The Android client persists `client_id` across app restarts. A new authenticatio
 
 Default heartbeat interval is 5 seconds. Default session timeout is 120 seconds. A client may re-authenticate on the same WebSocket after session expiry.
 
+### Multi-endpoint server identity (Android 1.2+)
+
+`hello_ok` includes a persistent `server_id` plus a human-readable `server_name`. Android pins the server identity after a successful connection and treats multiple IP addresses as routes to that same logical host only when the returned identity matches. In Auto mode, an mDNS-discovered `_vibemic._tcp` LAN endpoint is preferred, followed by the last successful endpoint, the configured bootstrap address, known verified endpoints, and built-in fallbacks. Failure of one route moves to the next candidate without discarding the durable delivery queue. On Android, direct NJU/Cosec connections are bound to the physical Wi-Fi network when available so a default VPN route does not unnecessarily capture local traffic.
+
 ## Append operation
 
 Client to host:

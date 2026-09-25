@@ -11,3 +11,4 @@ class HostConfig:
     session_timeout_ms: int = 120000
     replace_quiet_window_ms: int = 200
     applied_ops_path: str | None = None
+    server_id_path: str | None = None
