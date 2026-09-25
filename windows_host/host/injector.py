@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import logging
 import os
 import platform
 import threading
@@ -14,6 +15,21 @@ from typing import Optional, Protocol
 WORD = ctypes.c_uint16
 DWORD = ctypes.c_uint32
 LONG = ctypes.c_int32
+
+LOGGER = logging.getLogger("realtime_cursor_sync.host.injector")
+
+
+def _preview_text(text: str, limit: int = 48) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _safe_focused_window_info(backend: LinuxKeyBackend) -> dict[str, str]:
+    try:
+        return backend.focused_window_info()
+    except Exception as exc:  # pragma: no cover - defensive logging helper
+        return {"wm_class": "", "wm_name": "", "focus_error": str(exc)}
 
 
 class TextInjector(Protocol):
@@ -322,6 +338,12 @@ class AtspiTextBackend:
         editable = self._focused_editable_text()
         if editable is None:
             raise RuntimeError("editable_target_unavailable")
+        target_info = self.debug_target_info(editable)
+        LOGGER.info(
+            "inject path=atspi start text_len=%d target=%s",
+            len(text),
+            target_info,
+        )
 
         try:
             before_offset = int(editable.caretOffset)
@@ -337,6 +359,11 @@ class AtspiTextBackend:
 
         if not self._verify_insert(editable, before_offset, before_count, text):
             raise RuntimeError("insert_unverified")
+        LOGGER.info(
+            "inject path=atspi ok text_len=%d target=%s",
+            len(text),
+            target_info,
+        )
 
     def set_paste_mode(self, mode: str) -> None:
         return None
@@ -443,6 +470,17 @@ class AtspiTextBackend:
             return str(accessible.getRoleName())
         except Exception:
             return ""
+
+    def debug_target_info(self, accessible: object) -> dict[str, str]:
+        info: dict[str, str] = {
+            "role": self._role_name(accessible),
+            "name": "",
+        }
+        try:
+            info["name"] = str(getattr(accessible, "name", "") or "")
+        except Exception:
+            info["name"] = ""
+        return info
 
     def _find_focused_accessible(self) -> Optional[object]:
         try:
@@ -841,8 +879,19 @@ class LinuxX11Injector:
 
     def inject_text(self, text: str) -> None:
         self.backend.ensure_focus_ready()
+        focus_info = _safe_focused_window_info(self.backend)
+        LOGGER.info(
+            "inject path=x11 start text_len=%d focus=%s",
+            len(text),
+            focus_info,
+        )
         for ch in text:
             self.backend.tap_unicode_char(ch)
+        LOGGER.info(
+            "inject path=x11 ok text_len=%d focus=%s",
+            len(text),
+            focus_info,
+        )
 
     def replace_text(self, text: str) -> None:
         self.backend.ensure_focus_ready()
@@ -890,16 +939,33 @@ class LinuxClipboardPasteInjector:
         if not text:
             return
         self.backend.ensure_focus_ready()
+        focus_info = _safe_focused_window_info(self.backend)
+        mode = self._resolve_paste_mode_from_info(focus_info)
+        LOGGER.info(
+            "inject path=clipboard start text_len=%d mode=%s focus=%s",
+            len(text),
+            mode,
+            focus_info,
+        )
         try:
             self.clipboard.set_text(text)
         except RuntimeError:
             raise
-        self._send_paste_shortcut(self._resolve_paste_mode())
+        self._send_paste_shortcut(mode)
+        LOGGER.info(
+            "inject path=clipboard ok text_len=%d mode=%s focus=%s preview=%r",
+            len(text),
+            mode,
+            focus_info,
+            _preview_text(text),
+        )
 
     def _resolve_paste_mode(self) -> str:
+        return self._resolve_paste_mode_from_info(self.backend.focused_window_info())
+
+    def _resolve_paste_mode_from_info(self, info: dict[str, str]) -> str:
         if self.paste_mode != "auto":
             return self.paste_mode
-        info = self.backend.focused_window_info()
         wm_class = info.get("wm_class", "")
         wm_name = info.get("wm_name", "").lower()
         terminal_markers = (
@@ -973,22 +1039,36 @@ class LinuxTextInjector:
             return
         if self.primary is not None:
             try:
+                LOGGER.info("inject dispatch primary=clipboard text_len=%d", len(text))
                 self.primary.append_text(text)
                 return
             except RuntimeError as exc:
+                LOGGER.warning(
+                    "inject dispatch primary=clipboard failed reason=%s text_len=%d",
+                    exc,
+                    len(text),
+                )
                 if str(exc) not in {"backend_unavailable", "clipboard_unavailable", "focus_unavailable", "unsupported_paste_mode"}:
                     raise
         if self.atspi is not None:
             try:
+                LOGGER.info("inject dispatch secondary=atspi text_len=%d", len(text))
                 self.atspi.append_text(text)
                 return
             except RuntimeError as exc:
+                LOGGER.warning(
+                    "inject dispatch secondary=atspi failed reason=%s text_len=%d",
+                    exc,
+                    len(text),
+                )
                 if str(exc) not in {"backend_unavailable", "editable_target_unavailable", "insert_failed", "insert_unverified"}:
                     raise
+        LOGGER.info("inject dispatch fallback=x11 text_len=%d", len(text))
         self.fallback.append_text(text)
 
 def create_default_injector() -> TextInjector:
     if platform.system() == "Windows":
+        LOGGER.info("injector selected=WindowsSendInputInjector")
         return WindowsSendInputInjector()
     if platform.system() == "Linux" and os.environ.get("DISPLAY"):
         try:
@@ -1002,7 +1082,19 @@ def create_default_injector() -> TextInjector:
                 atspi = AtspiTextBackend()
             except RuntimeError:
                 atspi = None
+            LOGGER.info(
+                "injector selected=LinuxTextInjector primary=%s atspi=%s fallback=LinuxX11Injector display=%s",
+                primary is not None,
+                atspi is not None,
+                os.environ.get("DISPLAY", ""),
+            )
             return LinuxTextInjector(primary=primary, atspi=atspi, fallback=LinuxX11Injector())
         except RuntimeError:
+            LOGGER.warning("injector selected=MockInjector reason=linux_backend_init_failed")
             return MockInjector()
+    LOGGER.warning(
+        "injector selected=MockInjector reason=unsupported_environment platform=%s display=%s",
+        platform.system(),
+        os.environ.get("DISPLAY", ""),
+    )
     return MockInjector()

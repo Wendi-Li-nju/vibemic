@@ -72,6 +72,12 @@ from .session import SessionManager
 LOGGER = logging.getLogger("realtime_cursor_sync.host")
 
 
+def _preview_text(text: str, limit: int = 48) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
 @dataclass
 class HostStats:
     received_messages: int = 0
@@ -390,16 +396,39 @@ class RealtimeHost:
         try:
             insert = parse_insert(obj)
             session = self.session_mgr.expect_next_seq(insert.session_id, insert.token, insert.seq)
-            self.injector.set_paste_mode(insert.paste_mode or session.paste_mode)
+            paste_mode = insert.paste_mode or session.paste_mode
+            LOGGER.info(
+                "text_insert start client_id=%s seq=%s text_len=%d paste_mode=%s preview=%r",
+                state.get("client_id", ""),
+                insert.seq,
+                len(insert.text),
+                paste_mode,
+                _preview_text(insert.text),
+            )
+            self.injector.set_paste_mode(paste_mode)
             await self._run_injector(self.injector.inject_text, insert.text)
             session.applied_snapshot += insert.text
             ack_payload["seq"] = insert.seq
             ack_payload["ok"] = True
             self.stats.ack_ok += 1
+            LOGGER.info(
+                "text_insert ok client_id=%s seq=%s text_len=%d paste_mode=%s",
+                state.get("client_id", ""),
+                insert.seq,
+                len(insert.text),
+                paste_mode,
+            )
         except (ProtocolError, PermissionError, ValueError, RuntimeError) as exc:
             ack_payload["reason"] = str(exc)
             self.stats.ack_fail += 1
             self.stats.dropped_messages += 1
+            LOGGER.warning(
+                "text_insert failed client_id=%s seq=%s reason=%s payload=%s",
+                state.get("client_id", ""),
+                ack_payload["seq"],
+                exc,
+                obj,
+            )
         await self._emit(ws, state, ack_payload)
 
     async def _on_text_replace(self, ws: web.WebSocketResponse, state: dict[str, Any], obj: dict[str, Any]) -> None:
