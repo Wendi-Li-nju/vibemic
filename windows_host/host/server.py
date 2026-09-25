@@ -399,15 +399,27 @@ class RealtimeHost:
         }
         try:
             insert = parse_insert(obj)
-            session = self.session_mgr.expect_next_seq(insert.session_id, insert.token, insert.seq)
+            session = self.session_mgr.validate(insert.session_id, insert.token)
             ack_payload["seq"] = insert.seq
             if insert.op_id:
                 ack_payload["op_id"] = insert.op_id
 
-            is_duplicate = bool(
-                insert.op_id and self.applied_ops.contains(session.client_id, insert.op_id)
+            op_status = (
+                self.applied_ops.status(session.client_id, insert.op_id, insert.text)
+                if insert.op_id
+                else "missing"
             )
-            if is_duplicate:
+            if op_status == "unavailable":
+                raise ProtocolError("dedupe_ledger_unavailable")
+            if op_status == "conflict":
+                raise ProtocolError("op_id_conflict")
+
+            session = self.session_mgr.expect_next_seq(
+                insert.session_id,
+                insert.token,
+                insert.seq,
+            )
+            if op_status == "match":
                 # The client may resend after losing an ACK. Advance the new
                 # session's logical snapshot, but never inject the same append twice.
                 session.applied_snapshot += insert.text
@@ -435,7 +447,11 @@ class RealtimeHost:
                 self.injector.set_paste_mode(paste_mode)
                 await self._run_injector(self.injector.inject_text, insert.text)
                 session.applied_snapshot += insert.text
-                if insert.op_id and not self.applied_ops.record(session.client_id, insert.op_id):
+                if insert.op_id and not self.applied_ops.record(
+                    session.client_id,
+                    insert.op_id,
+                    insert.text,
+                ):
                     # Delivery already happened, so persistence failure must not
                     # turn a successful insert into a retry/duplicate.
                     LOGGER.warning(

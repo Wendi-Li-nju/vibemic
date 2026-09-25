@@ -367,7 +367,7 @@ class MainActivity : AppCompatActivity() {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .edit()
             .putString(PREF_LOCAL_DRAFT, text)
-            .apply()
+            .commit()
     }
 
     private fun persistDeliveryState(sync: Boolean) {

@@ -38,7 +38,9 @@ Rules:
 - Transport-level newline, carriage-return, tab, and backspace control characters remain rejected. Android normalizes those IME characters locally before transport rather than rolling the draft back.
 - `paste_mode` is optional and overrides the session default for that chunk.
 - The host keeps a bounded persistent `(client_id, op_id)` ledger.
-- If an already-applied `op_id` is safely retried, the host returns success with `duplicate: true` and does not inject the chunk a second time.
+- If an already-applied `op_id` is safely retried with the same text, the host returns success with `duplicate: true` and does not inject the chunk a second time.
+- Reusing an existing `op_id` with different text is rejected as `op_id_conflict` before the session sequence is consumed.
+- If the persistent dedupe ledger cannot be trusted or written, op-id delivery fails closed as `dedupe_ledger_unavailable` instead of risking duplicate injection.
 
 ## ACK
 

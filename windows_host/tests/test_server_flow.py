@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
 import threading
 import unittest
+from pathlib import Path
 
 from host.config import HostConfig
 from host.injector import MockInjector
@@ -243,6 +245,159 @@ class ServerFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(retry_ack["duplicate"])
         self.assertEqual(retry_ack["op_id"], op_id)
         self.assertEqual(self.injector.applied, ["once"])
+
+    async def test_op_id_conflict_is_rejected_without_consuming_seq(self) -> None:
+        auth_ok = await self._auth()
+        op_id = "stable-op-conflict"
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            (
+                '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"op_id":"%s","text":"first","ts":%d}'
+                % (auth_ok["session_id"], auth_ok["token"], op_id, int(time.time() * 1000))
+            ),
+        )
+        self.assertTrue(self.ws.sent[-1]["ok"])
+
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            (
+                '{"type":"text_insert","session_id":"%s","token":"%s","seq":2,"op_id":"%s","text":"different","ts":%d}'
+                % (auth_ok["session_id"], auth_ok["token"], op_id, int(time.time() * 1000))
+            ),
+        )
+        conflict_ack = self.ws.sent[-1]
+        self.assertFalse(conflict_ack["ok"])
+        self.assertEqual(conflict_ack["reason"], "op_id_conflict")
+        self.assertEqual(self.injector.applied, ["first"])
+
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            (
+                '{"type":"text_insert","session_id":"%s","token":"%s","seq":2,"op_id":"new-op","text":"second","ts":%d}'
+                % (auth_ok["session_id"], auth_ok["token"], int(time.time() * 1000))
+            ),
+        )
+        self.assertTrue(self.ws.sent[-1]["ok"])
+        self.assertEqual(self.injector.applied, ["first", "second"])
+
+    async def test_corrupt_dedupe_ledger_blocks_op_id_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_path = Path(tmp) / "applied_ops.json"
+            ledger_path.write_text("{not-json")
+            injector = MockInjector()
+            host = RealtimeHost(
+                config=HostConfig(
+                    bind="127.0.0.1",
+                    port=8765,
+                    heartbeat_interval_ms=200,
+                    session_timeout_ms=1000,
+                    replace_quiet_window_ms=20,
+                    applied_ops_path=str(ledger_path),
+                ),
+                injector=injector,
+            )
+            ws = FakeWebSocket()
+            state = {"hello_ok": False, "client_id": ""}
+            try:
+                await host._dispatch(
+                    ws,
+                    state,
+                    '{"type":"hello","client_id":"android-stable","app_ver":"1.1.0"}',
+                )
+                await host._dispatch(ws, state, '{"type":"auth"}')
+                auth_ok = ws.sent[-1]
+                await host._dispatch(
+                    ws,
+                    state,
+                    (
+                        '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"op_id":"safe-op","text":"must-not-inject","ts":%d}'
+                        % (auth_ok["session_id"], auth_ok["token"], int(time.time() * 1000))
+                    ),
+                )
+                ack = ws.sent[-1]
+                self.assertFalse(ack["ok"])
+                self.assertEqual(ack["reason"], "dedupe_ledger_unavailable")
+                self.assertEqual(injector.applied, [])
+            finally:
+                await host.close()
+
+    async def test_persistent_dedupe_survives_host_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger_path = str(Path(tmp) / "applied_ops.json")
+            first_injector = MockInjector()
+            first_host = RealtimeHost(
+                config=HostConfig(
+                    bind="127.0.0.1",
+                    port=8765,
+                    heartbeat_interval_ms=200,
+                    session_timeout_ms=1000,
+                    replace_quiet_window_ms=20,
+                    applied_ops_path=ledger_path,
+                ),
+                injector=first_injector,
+            )
+            first_ws = FakeWebSocket()
+            first_state = {"hello_ok": False, "client_id": ""}
+            try:
+                await first_host._dispatch(
+                    first_ws,
+                    first_state,
+                    '{"type":"hello","client_id":"android-stable","app_ver":"1.1.0"}',
+                )
+                await first_host._dispatch(first_ws, first_state, '{"type":"auth"}')
+                first_auth = first_ws.sent[-1]
+                await first_host._dispatch(
+                    first_ws,
+                    first_state,
+                    (
+                        '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"op_id":"restart-op","text":"once","ts":%d}'
+                        % (first_auth["session_id"], first_auth["token"], int(time.time() * 1000))
+                    ),
+                )
+                self.assertTrue(first_ws.sent[-1]["ok"])
+                self.assertEqual(first_injector.applied, ["once"])
+            finally:
+                await first_host.close()
+
+            second_injector = MockInjector()
+            second_host = RealtimeHost(
+                config=HostConfig(
+                    bind="127.0.0.1",
+                    port=8765,
+                    heartbeat_interval_ms=200,
+                    session_timeout_ms=1000,
+                    replace_quiet_window_ms=20,
+                    applied_ops_path=ledger_path,
+                ),
+                injector=second_injector,
+            )
+            second_ws = FakeWebSocket()
+            second_state = {"hello_ok": False, "client_id": ""}
+            try:
+                await second_host._dispatch(
+                    second_ws,
+                    second_state,
+                    '{"type":"hello","client_id":"android-stable","app_ver":"1.1.0"}',
+                )
+                await second_host._dispatch(second_ws, second_state, '{"type":"auth"}')
+                second_auth = second_ws.sent[-1]
+                await second_host._dispatch(
+                    second_ws,
+                    second_state,
+                    (
+                        '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"op_id":"restart-op","text":"once","ts":%d}'
+                        % (second_auth["session_id"], second_auth["token"], int(time.time() * 1000))
+                    ),
+                )
+                retry_ack = second_ws.sent[-1]
+                self.assertTrue(retry_ack["ok"])
+                self.assertTrue(retry_ack["duplicate"])
+                self.assertEqual(second_injector.applied, [])
+            finally:
+                await second_host.close()
 
     async def test_1000_char_stream(self) -> None:
         auth_ok = await self._auth()
