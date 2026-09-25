@@ -26,11 +26,16 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val INPUT_SEND_DEBOUNCE_MS = 25L
         private const val COMPOSING_RETRY_DELAY_MS = 40L
+        private const val DELIVERY_ACK_TIMEOUT_MS = 10000L
         private const val APPEND_ONLY_WARNING = "Only append-at-cursor sync is supported"
         private const val PREFS_NAME = "rtcs_prefs"
         private const val PREF_PASTE_MODE = "paste_mode"
         private const val PREF_HOST = "connection_host"
         private const val PREF_PORT = "connection_port"
+        private const val PREF_LOCAL_DRAFT = "local_input_draft"
+        private const val PREF_SYNC_BASELINE = "local_sync_baseline"
+        private const val PREF_DELIVERY_QUEUE = "delivery_queue"
+        private const val PREF_CLIENT_ID = "client_id"
         private const val DEFAULT_HOST = "114.212.82.206"
         private const val DEFAULT_PORT = "8765"
         private const val PASTE_MODE_CTRL_V = "ctrl_v"
@@ -46,7 +51,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var inputEditText: EditText
     private lateinit var pasteModeRadioGroup: RadioGroup
 
-    private val clientId: String = "android-" + UUID.randomUUID().toString()
+    private lateinit var clientId: String
     private val uiHandler = Handler(Looper.getMainLooper())
     private val okHttpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -54,9 +59,11 @@ class MainActivity : AppCompatActivity() {
 
     private var webSocket: WebSocket? = null
     private var isConnected = false
+    private var isConnecting = false
     private var isAuthed = false
     private var reconnectAttempt = 0
     private var shouldReconnect = false
+    private var socketGeneration = 0L
 
     private var sessionId: String = ""
     private var token: String = ""
@@ -66,13 +73,22 @@ class MainActivity : AppCompatActivity() {
     private var lastInputSnapshot: String = ""
     private var isProgrammaticInputChange: Boolean = false
     private var reauthInProgress: Boolean = false
-    private val pendingAppends: ArrayDeque<String> = ArrayDeque()
-    private val unackedAppends: LinkedHashMap<Int, String> = LinkedHashMap()
+    private val deliveryQueue: ArrayDeque<DeliveryOp> = ArrayDeque()
+    private var inflightOp: DeliveryOp? = null
+    private var inflightSeq: Int = 0
     private val processInputRunnable = Runnable { maybeProcessInputText() }
+    private val deliveryAckTimeoutRunnable = Runnable {
+        if (inflightOp != null) {
+            inflightOp = null
+            inflightSeq = 0
+            persistDeliveryState(sync = false)
+            restartConnection("Delivery confirmation timed out; text kept for retry")
+        }
+    }
 
     private val reconnectRunnable = object : Runnable {
         override fun run() {
-            if (!shouldReconnect || isConnected) return
+            if (!shouldReconnect || isConnected || isConnecting) return
             connectInternal()
         }
     }
@@ -80,7 +96,10 @@ class MainActivity : AppCompatActivity() {
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
             if (!isConnected || !isAuthed) return
-            sendHeartbeatNow()
+            if (!sendHeartbeatNow()) {
+                restartConnection("Connection stalled; text kept for retry")
+                return
+            }
             if (isConnected && isAuthed) {
                 uiHandler.postDelayed(this, heartbeatIntervalMs)
             }
@@ -100,12 +119,17 @@ class MainActivity : AppCompatActivity() {
         pasteModeRadioGroup = findViewById(R.id.pasteModeRadioGroup)
 
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        clientId = prefs.getString(PREF_CLIENT_ID, null)?.takeIf { it.isNotBlank() }
+            ?: ("android-" + UUID.randomUUID().toString()).also {
+                prefs.edit().putString(PREF_CLIENT_ID, it).commit()
+            }
         selectedPasteMode = prefs
             .getString(PREF_PASTE_MODE, PASTE_MODE_CTRL_V)
             ?.takeIf { it in setOf(PASTE_MODE_CTRL_V, PASTE_MODE_CTRL_SHIFT_V, PASTE_MODE_SHIFT_INSERT) }
             ?: PASTE_MODE_CTRL_V
         bindPasteModeSelection()
         updateEndpointSummary()
+        restorePersistentInputState()
 
         connectionSettingsButton.setOnClickListener {
             showConnectionSettingsDialog()
@@ -121,15 +145,15 @@ class MainActivity : AppCompatActivity() {
         }
 
         clearReconnectButton.setOnClickListener {
-            clearLocalInput()
+            requestClearLocalInput()
         }
 
         inputEditText.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
 
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                persistLocalDraft(s?.toString().orEmpty())
                 if (isProgrammaticInputChange) {
-                    lastInputSnapshot = s?.toString().orEmpty()
                     return
                 }
                 scheduleProcessInputText(INPUT_SEND_DEBOUNCE_MS)
@@ -146,22 +170,36 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (isConnected && isAuthed) {
-            sendHeartbeatNow()
-        } else if (shouldReconnect && !isConnected) {
+            if (!sendHeartbeatNow()) {
+                restartConnection("Connection stalled; reconnecting...")
+            }
+        } else if (shouldReconnect && !isConnected && !isConnecting) {
             scheduleReconnect()
         }
     }
 
+    override fun onPause() {
+        persistDeliveryState(sync = true)
+        super.onPause()
+    }
+
     override fun onDestroy() {
-        super.onDestroy()
+        persistDeliveryState(sync = true)
         shouldReconnect = false
         uiHandler.removeCallbacks(heartbeatRunnable)
         uiHandler.removeCallbacks(reconnectRunnable)
-        webSocket?.close(1000, "Activity destroy")
+        uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+        socketGeneration += 1
+        val socket = webSocket
+        webSocket = null
+        isConnecting = false
+        socket?.close(1000, "Activity destroy")
         okHttpClient.dispatcher.executorService.shutdown()
+        super.onDestroy()
     }
 
     private fun connectInternal() {
+        if (isConnected || isConnecting) return
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val host = prefs.getString(PREF_HOST, DEFAULT_HOST)?.trim().orEmpty().ifEmpty { DEFAULT_HOST }
         val port = prefs.getString(PREF_PORT, DEFAULT_PORT)?.trim().orEmpty().ifEmpty { DEFAULT_PORT }
@@ -175,8 +213,10 @@ class MainActivity : AppCompatActivity() {
         }
         val url = "ws://$host:$port/ws"
         updateStatus("Connecting to $host:$port")
+        isConnecting = true
+        val generation = ++socketGeneration
         val req = Request.Builder().url(url).build()
-        webSocket = okHttpClient.newWebSocket(req, SocketListener())
+        webSocket = okHttpClient.newWebSocket(req, SocketListener(generation))
     }
 
     private fun showConnectionSettingsDialog() {
@@ -236,8 +276,32 @@ class MainActivity : AppCompatActivity() {
         shouldReconnect = false
         uiHandler.removeCallbacks(heartbeatRunnable)
         uiHandler.removeCallbacks(reconnectRunnable)
-        webSocket?.close(1000, "Manual disconnect")
+        uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+        socketGeneration += 1
+        val socket = webSocket
+        webSocket = null
+        isConnecting = false
+        socket?.close(1000, "Manual disconnect")
         onDisconnected("Disconnected")
+    }
+
+    private fun requestClearLocalInput() {
+        val current = inputEditText.text?.toString().orEmpty()
+        if (current.isEmpty()) {
+            clearLocalInput()
+            return
+        }
+        val pendingNote = if (deliveryQueue.isNotEmpty()) {
+            " Pending text already queued for desktop delivery will be kept."
+        } else {
+            ""
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Clear local draft?")
+            .setMessage("This removes the text shown on this phone.$pendingNote")
+            .setNegativeButton(R.string.cancel, null)
+            .setPositiveButton("Clear") { _, _ -> clearLocalInput() }
+            .show()
     }
 
     private fun clearLocalInput() {
@@ -246,9 +310,11 @@ class MainActivity : AppCompatActivity() {
         inputEditText.setText("")
         isProgrammaticInputChange = false
         lastInputSnapshot = ""
-        pendingAppends.clear()
-        unackedAppends.clear()
-        updateStatus("Local input cleared")
+        persistDeliveryState(sync = true)
+        updateStatus(
+            if (deliveryQueue.isNotEmpty()) "Local draft cleared; pending delivery kept"
+            else "Local input cleared"
+        )
         if (isConnected && isAuthed) {
             sendHeartbeatNow()
         }
@@ -257,33 +323,108 @@ class MainActivity : AppCompatActivity() {
     private fun maybeProcessInputText() {
         val editable = inputEditText.text
         if (editable != null && BaseInputConnection.getComposingSpanStart(editable) != -1) {
+            persistLocalDraft(editable.toString())
             scheduleProcessInputText(COMPOSING_RETRY_DELAY_MS)
             return
         }
-        val current = editable?.toString().orEmpty()
+
+        val rawCurrent = editable?.toString().orEmpty()
+        persistLocalDraft(rawCurrent)
+        if (rawCurrent == lastInputSnapshot) return
+
+        val current = InputSanitizer.normalizeControlChars(rawCurrent)
+        if (current != rawCurrent) {
+            replaceLocalInputWithoutChangingSyncBaseline(current)
+            persistLocalDraft(current)
+            updateStatus("Line break normalized; draft preserved")
+        }
+
         if (current == lastInputSnapshot) return
-        if (current.contains("\n") || current.contains("\r") || current.contains("\t") || current.contains("\b")) {
-            statusTextView.text = "Control chars are not supported in MVP"
-            restoreInputSnapshot()
-            return
-        }
         if (!current.startsWith(lastInputSnapshot)) {
-            updateStatus(APPEND_ONLY_WARNING)
-            restoreInputSnapshot()
+            lastInputSnapshot = current
+            persistDeliveryState(sync = true)
+            updateStatus("$APPEND_ONLY_WARNING; edit kept locally, future appends will sync")
             return
         }
+
         val suffix = current.substring(lastInputSnapshot.length)
         if (suffix.isNotEmpty()) {
-            sendOrQueueTextInsert(suffix)
+            deliveryQueue.addLast(DeliveryOp(UUID.randomUUID().toString(), suffix))
         }
         lastInputSnapshot = current
+        persistDeliveryState(sync = true)
+        drainDeliveryQueue()
     }
 
-    private fun restoreInputSnapshot() {
+    private fun replaceLocalInputWithoutChangingSyncBaseline(text: String) {
         isProgrammaticInputChange = true
-        inputEditText.setText(lastInputSnapshot)
-        inputEditText.setSelection(lastInputSnapshot.length)
+        inputEditText.setText(text)
+        inputEditText.setSelection(text.length)
         isProgrammaticInputChange = false
+    }
+
+    private fun persistLocalDraft(text: String) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putString(PREF_LOCAL_DRAFT, text)
+            .apply()
+    }
+
+    private fun persistDeliveryState(sync: Boolean) {
+        val editor = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .edit()
+            .putString(PREF_LOCAL_DRAFT, inputEditText.text?.toString().orEmpty())
+            .putString(PREF_SYNC_BASELINE, lastInputSnapshot)
+            .putString(PREF_DELIVERY_QUEUE, DeliveryQueueCodec.encode(deliveryQueue))
+        if (sync) {
+            editor.commit()
+        } else {
+            editor.apply()
+        }
+    }
+
+    private fun restorePersistentInputState() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        deliveryQueue.clear()
+        deliveryQueue.addAll(
+            DeliveryQueueCodec.decode(prefs.getString(PREF_DELIVERY_QUEUE, "").orEmpty())
+        )
+
+        val rawDraft = prefs.getString(PREF_LOCAL_DRAFT, "").orEmpty()
+        val draft = InputSanitizer.normalizeControlChars(rawDraft)
+        val savedBaseline = prefs.getString(PREF_SYNC_BASELINE, "").orEmpty()
+        if (draft.isNotEmpty()) {
+            replaceLocalInputWithoutChangingSyncBaseline(draft)
+        }
+
+        if (draft.startsWith(savedBaseline)) {
+            val unsentTail = draft.substring(savedBaseline.length)
+            if (unsentTail.isNotEmpty()) {
+                deliveryQueue.addLast(DeliveryOp(UUID.randomUUID().toString(), unsentTail))
+                lastInputSnapshot = draft
+                persistDeliveryState(sync = true)
+                updateStatus(
+                    "Recovered unsent draft and queued it safely (" + deliveryQueue.size + " pending)"
+                )
+            } else {
+                lastInputSnapshot = savedBaseline
+                if (draft != rawDraft) {
+                    persistDeliveryState(sync = true)
+                }
+                when {
+                    deliveryQueue.isNotEmpty() ->
+                        updateStatus("Recovered draft and " + deliveryQueue.size + " pending delivery item(s)")
+                    draft.isNotEmpty() ->
+                        updateStatus("Recovered local draft")
+                }
+            }
+        } else {
+            // Never auto-resend an ambiguous restored draft. Preserve it locally and
+            // establish a new safe baseline instead of overwriting user text.
+            lastInputSnapshot = draft
+            persistDeliveryState(sync = true)
+            updateStatus("Recovered draft safely; previous sync state was inconsistent")
+        }
     }
 
     private fun scheduleProcessInputText(delayMs: Long) {
@@ -302,33 +443,32 @@ class MainActivity : AppCompatActivity() {
         return webSocket?.send(ping.toString()) == true
     }
 
-    private fun isSessionExpiredReason(reason: String): Boolean {
-        return reason == "no_active_session" || reason == "invalid_session"
+    private fun isSessionRecoveryReason(reason: String): Boolean {
+        return reason == "no_active_session" ||
+            reason == "invalid_session" ||
+            reason == "out_of_order"
     }
 
-    private fun recoverExpiredSession() {
+    private fun recoverSession() {
         if (!isConnected || reauthInProgress) return
         reauthInProgress = true
         isAuthed = false
         sessionId = ""
         token = ""
         localSeq = 0
+        inflightOp = null
+        inflightSeq = 0
         uiHandler.removeCallbacks(heartbeatRunnable)
-
-        if (unackedAppends.isNotEmpty()) {
-            val appends = unackedAppends.entries.sortedBy { it.key }.map { it.value }
-            unackedAppends.clear()
-            for (index in appends.indices.reversed()) {
-                pendingAppends.addFirst(appends[index])
-            }
+        uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+        persistDeliveryState(sync = false)
+        updateStatus("Connection state changed; text kept. Reauthorizing...")
+        if (!sendHelloAndAuth()) {
+            restartConnection("Connection stalled; reconnecting...")
         }
-
-        updateStatus("Session expired, reauthorizing...")
-        sendHelloAndAuth()
     }
 
     private fun scheduleReconnect() {
-        if (!shouldReconnect) return
+        if (!shouldReconnect || isConnecting || isConnected) return
         reconnectAttempt += 1
         val backoffMs = minOf(5000L, (500L shl (reconnectAttempt - 1).coerceAtMost(3)))
         updateStatus("Reconnecting in ${backoffMs}ms")
@@ -337,65 +477,77 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onDisconnected(reason: String) {
+        isConnecting = false
         isConnected = false
         isAuthed = false
         sessionId = ""
         token = ""
         localSeq = 0
         reauthInProgress = false
-        unackedAppends.clear()
-        lastInputSnapshot = inputEditText.text?.toString().orEmpty()
+        inflightOp = null
+        inflightSeq = 0
+        uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+        persistDeliveryState(sync = false)
         connectButton.text = getString(R.string.connect)
         updateStatus(reason)
     }
 
-    private fun sendHelloAndAuth() {
+    private fun restartConnection(reason: String) {
+        uiHandler.removeCallbacks(heartbeatRunnable)
+        uiHandler.removeCallbacks(reconnectRunnable)
+        socketGeneration += 1
+        val socket = webSocket
+        webSocket = null
+        socket?.cancel()
+        onDisconnected(reason)
+        if (shouldReconnect) {
+            scheduleReconnect()
+        }
+    }
+
+    private fun sendHelloAndAuth(): Boolean {
+        val socket = webSocket ?: return false
         val hello = JSONObject()
             .put("type", "hello")
             .put("client_id", clientId)
-            .put("app_ver", "1.0.1")
-        webSocket?.send(hello.toString())
+            .put("app_ver", "1.1.0")
         val auth = JSONObject()
             .put("type", "auth")
             .put("paste_mode", selectedPasteMode)
-        webSocket?.send(auth.toString())
+        return socket.send(hello.toString()) && socket.send(auth.toString())
     }
 
-    private fun sendOrQueueTextInsert(text: String) {
-        if (text.isEmpty()) return
-        if (!isConnected || !isAuthed || sessionId.isEmpty() || token.isEmpty()) {
-            pendingAppends.addLast(text)
-            updateStatus("Append queued, waiting reconnect")
-            return
-        }
+    private fun drainDeliveryQueue() {
+        if (!isConnected || !isAuthed || sessionId.isEmpty() || token.isEmpty()) return
+        if (inflightOp != null || deliveryQueue.isEmpty()) return
+
+        val op = deliveryQueue.first()
         val seq = localSeq + 1
-        val now = System.currentTimeMillis()
         val msg = JSONObject()
             .put("type", "text_insert")
             .put("session_id", sessionId)
             .put("token", token)
             .put("seq", seq)
-            .put("text", text)
+            .put("op_id", op.id)
+            .put("text", op.text)
             .put("paste_mode", selectedPasteMode)
-            .put("ts", now)
+            .put("ts", System.currentTimeMillis())
+
+        inflightOp = op
+        inflightSeq = seq
         val sent = webSocket?.send(msg.toString()) == true
         if (sent) {
             localSeq = seq
-            unackedAppends[seq] = text
+            uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+            uiHandler.postDelayed(deliveryAckTimeoutRunnable, DELIVERY_ACK_TIMEOUT_MS)
+            updateStatus(
+                if (deliveryQueue.size > 1) "Sending queued text..."
+                else "Connected"
+            )
         } else {
-            pendingAppends.addFirst(text)
-            updateStatus("Append queued, waiting reconnect")
-        }
-    }
-
-    private fun flushPendingAppends() {
-        while (pendingAppends.isNotEmpty() && isConnected && isAuthed && sessionId.isNotEmpty() && token.isNotEmpty()) {
-            val beforeSeq = localSeq
-            val append = pendingAppends.removeFirst()
-            sendOrQueueTextInsert(append)
-            if (localSeq == beforeSeq) {
-                break
-            }
+            inflightOp = null
+            inflightSeq = 0
+            restartConnection("Connection stalled; text kept for retry")
         }
     }
 
@@ -416,36 +568,60 @@ class MainActivity : AppCompatActivity() {
                 if (isAuthed) {
                     reauthInProgress = false
                     reconnectAttempt = 0
-                    updateStatus("Connected")
+                    updateStatus(
+                        if (deliveryQueue.isNotEmpty()) "Connected; resuming pending delivery"
+                        else "Connected"
+                    )
                     uiHandler.removeCallbacks(heartbeatRunnable)
                     uiHandler.postDelayed(heartbeatRunnable, heartbeatIntervalMs)
-                    flushPendingAppends()
+                    drainDeliveryQueue()
                 } else {
                     updateStatus("Authorization failed")
                 }
             }
             "ack" -> {
                 val seq = obj.optInt("seq", -1)
+                val opId = obj.optString("op_id")
                 val ok = obj.optBoolean("ok", false)
-                val reason = obj.optString("reason")
-                if (ok) {
-                    unackedAppends.remove(seq)
-                } else if (isSessionExpiredReason(reason)) {
-                    recoverExpiredSession()
-                } else {
-                    unackedAppends.remove(seq)
+                val currentInflight = inflightOp
+                val matchesInflight = currentInflight != null &&
+                    seq == inflightSeq &&
+                    opId == currentInflight.id
+
+                if (ok && matchesInflight) {
+                    uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+                    if (deliveryQueue.firstOrNull()?.id == currentInflight?.id) {
+                        deliveryQueue.removeFirst()
+                    }
+                    inflightOp = null
+                    inflightSeq = 0
+                    persistDeliveryState(sync = true)
                     updateStatus(
-                        if (reason.isNotEmpty()) "Send failed: $reason" else "Send failed"
+                        if (deliveryQueue.isNotEmpty()) "Delivered; sending next queued text..."
+                        else "Connected"
+                    )
+                    drainDeliveryQueue()
+                } else if (currentInflight != null) {
+                    uiHandler.removeCallbacks(deliveryAckTimeoutRunnable)
+                    inflightOp = null
+                    inflightSeq = 0
+                    persistDeliveryState(sync = false)
+                    restartConnection(
+                        if (ok) "Unexpected delivery confirmation; text kept for safe retry"
+                        else "Delivery was not confirmed; text kept for retry"
                     )
                 }
             }
             "pong" -> Unit
             "error" -> {
                 val reason = obj.optString("reason")
-                if (isSessionExpiredReason(reason)) {
-                    recoverExpiredSession()
+                if (isSessionRecoveryReason(reason) || inflightOp != null) {
+                    inflightOp = null
+                    inflightSeq = 0
+                    persistDeliveryState(sync = false)
+                    recoverSession()
                 } else {
-                    updateStatus("Server error: $reason")
+                    restartConnection("Connection problem; reconnecting safely")
                 }
             }
         }
@@ -484,18 +660,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private inner class SocketListener : WebSocketListener() {
+    private fun isCurrentSocket(generation: Long, socket: WebSocket): Boolean {
+        return generation == socketGeneration && socket === webSocket
+    }
+
+    private inner class SocketListener(
+        private val generation: Long,
+    ) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             runOnUiThread {
+                if (!isCurrentSocket(generation, webSocket)) {
+                    webSocket.close(1000, "Superseded connection")
+                    return@runOnUiThread
+                }
+                isConnecting = false
                 isConnected = true
                 connectButton.text = getString(R.string.disconnect)
                 updateStatus("Connected, signing in...")
-                sendHelloAndAuth()
+                if (!sendHelloAndAuth()) {
+                    restartConnection("Connection stalled; reconnecting safely")
+                }
             }
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
-            runOnUiThread { handleMessage(text) }
+            runOnUiThread {
+                if (isCurrentSocket(generation, webSocket)) {
+                    handleMessage(text)
+                }
+            }
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -504,17 +697,25 @@ class MainActivity : AppCompatActivity() {
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             runOnUiThread {
+                if (!isCurrentSocket(generation, webSocket)) return@runOnUiThread
+                this@MainActivity.webSocket = null
                 uiHandler.removeCallbacks(heartbeatRunnable)
-                onDisconnected(if (reason.isNotEmpty()) "Disconnected: $reason" else "Disconnected")
-                scheduleReconnect()
+                onDisconnected("Disconnected; text kept for retry")
+                if (shouldReconnect) {
+                    scheduleReconnect()
+                }
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             runOnUiThread {
+                if (!isCurrentSocket(generation, webSocket)) return@runOnUiThread
+                this@MainActivity.webSocket = null
                 uiHandler.removeCallbacks(heartbeatRunnable)
-                onDisconnected("Connection error: ${t.message ?: "unknown"}")
-                scheduleReconnect()
+                onDisconnected("Connection interrupted; text kept for retry")
+                if (shouldReconnect) {
+                    scheduleReconnect()
+                }
             }
         }
     }

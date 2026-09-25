@@ -6,6 +6,7 @@ import logging
 from aiohttp import web
 
 from .config import HostConfig
+from .dedupe import default_applied_ops_path
 from .server import build_app
 
 
@@ -31,6 +32,11 @@ def parse_args() -> argparse.Namespace:
         default=200,
         help="How long to wait after the latest snapshot before applying it",
     )
+    parser.add_argument(
+        "--applied-ops-path",
+        default=str(default_applied_ops_path()),
+        help="Persistent dedupe ledger for safely retried append operations",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
 
@@ -47,6 +53,7 @@ def run() -> None:
         heartbeat_interval_ms=args.heartbeat_interval_ms,
         session_timeout_ms=args.session_timeout_ms,
         replace_quiet_window_ms=args.replace_quiet_window_ms,
+        applied_ops_path=args.applied_ops_path,
     )
     app = build_app(config=config)
     host = app["host"]

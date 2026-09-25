@@ -33,6 +33,7 @@ class InsertMessage:
     text: str
     ts: int
     paste_mode: str | None
+    op_id: str | None
 
 
 @dataclass
@@ -68,6 +69,9 @@ def parse_insert(obj: dict[str, Any]) -> InsertMessage:
         raise ProtocolError("unsupported_character")
     if not isinstance(obj["ts"], int) or obj["ts"] <= 0:
         raise ProtocolError("invalid_ts")
+    op_id = obj.get("op_id")
+    if op_id is not None and (not isinstance(op_id, str) or not op_id):
+        raise ProtocolError("invalid_op_id")
     return InsertMessage(
         session_id=obj["session_id"],
         token=obj["token"],
@@ -75,6 +79,7 @@ def parse_insert(obj: dict[str, Any]) -> InsertMessage:
         text=obj["text"],
         ts=obj["ts"],
         paste_mode=normalize_paste_mode(obj.get("paste_mode"), default="auto") if "paste_mode" in obj else None,
+        op_id=op_id,
     )
 
 

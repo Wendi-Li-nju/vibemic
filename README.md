@@ -18,14 +18,15 @@ The current MVP is text-first rather than raw-audio transport. The Android side 
 - Runs a Python host on Windows and Linux X11.
 - Runs an Android client that sends appended text to the host over WebSocket.
 - Injects Unicode text at the current desktop cursor.
-- Supports single-device sessions with sequence-checked delivery and heartbeat monitoring.
+- Supports single-device sessions with sequence-checked delivery, heartbeat monitoring, persistent phone-side delivery queues, and stable-operation deduplication.
+- Preserves long phone drafts across control-character normalization, disconnects, stale sessions, ACK loss, and app restarts instead of rolling input back.
 - Lets the Android client choose Linux paste mode explicitly: `Ctrl+V`, `Ctrl+Shift+V`, or `Shift+Insert`.
 
 ## Current scope and limitations
 
 - Current MVP is append-only desktop text insertion.
-- Non-append edits stay local to the Android input box.
-- Plain text only: no IME composition, emoji control keys, `Enter`, `Delete`, or arrow keys.
+- Non-append edits stay local to the Android input box; future appended text can continue syncing from the new local baseline.
+- Plain text only. IME composition is preserved locally and sent after commit; desktop control keys such as `Enter`, `Delete`, or arrows are not transported.
 - LAN or Tailscale networking only.
 - Linux support currently targets X11, not Wayland.
 - The project direction is "phone as vibe mic", but the current transport layer sends text, not microphone audio frames.
@@ -34,7 +35,7 @@ The current MVP is text-first rather than raw-audio transport. The Android side 
 
 - `windows_host/`: Python host app for Windows and Linux X11. Receives text over WebSocket and injects it into the active cursor target.
 - `android_client/`: Android app source code for the phone-side input client and session management.
-- `protocol/PROTOCOL.md`: Wire protocol and sequencing rules.
+- `protocol/LOSSLESS_PROTOCOL.md`: current lossless v1.1 wire protocol, durable queue, retry, and dedupe rules. `protocol/PROTOCOL.md` remains the legacy v1 reference.
 
 ## Quick start
 

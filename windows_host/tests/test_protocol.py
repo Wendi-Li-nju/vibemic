@@ -47,6 +47,32 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(msg.text, "你好abc123")
 
+    def test_parse_insert_accepts_stable_op_id(self) -> None:
+        msg = parse_insert(
+            {
+                "session_id": "s1",
+                "token": "t1",
+                "seq": 1,
+                "op_id": "op-123",
+                "text": "abc",
+                "ts": 123456,
+            }
+        )
+        self.assertEqual(msg.op_id, "op-123")
+
+    def test_parse_insert_rejects_empty_op_id(self) -> None:
+        with self.assertRaises(ProtocolError):
+            parse_insert(
+                {
+                    "session_id": "s1",
+                    "token": "t1",
+                    "seq": 1,
+                    "op_id": "",
+                    "text": "abc",
+                    "ts": 123456,
+                }
+            )
+
     def test_parse_replace_accepts_empty_text(self) -> None:
         msg = parse_replace(
             {

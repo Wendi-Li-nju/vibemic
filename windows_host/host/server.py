@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from typing import Optional
 
@@ -65,6 +66,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for constrained test 
     web = _FallbackWebModule()
 
 from .config import HostConfig
+from .dedupe import AppliedOpLedger
 from .injector import TextInjector, create_default_injector
 from .protocol import ProtocolError, normalize_paste_mode, parse_insert, parse_message, parse_replace
 from .session import SessionManager
@@ -107,6 +109,8 @@ class RealtimeHost:
         self.config = config or HostConfig()
         self.injector = injector or create_default_injector()
         self.session_mgr = SessionManager(timeout_ms=self.config.session_timeout_ms)
+        ledger_path = Path(self.config.applied_ops_path) if self.config.applied_ops_path else None
+        self.applied_ops = AppliedOpLedger(path=ledger_path)
         self.stats = HostStats()
         self._inject_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rtcs-inject")
         self._replace_lock = asyncio.Lock()
@@ -396,28 +400,59 @@ class RealtimeHost:
         try:
             insert = parse_insert(obj)
             session = self.session_mgr.expect_next_seq(insert.session_id, insert.token, insert.seq)
-            paste_mode = insert.paste_mode or session.paste_mode
-            LOGGER.info(
-                "text_insert start client_id=%s seq=%s text_len=%d paste_mode=%s preview=%r",
-                state.get("client_id", ""),
-                insert.seq,
-                len(insert.text),
-                paste_mode,
-                _preview_text(insert.text),
-            )
-            self.injector.set_paste_mode(paste_mode)
-            await self._run_injector(self.injector.inject_text, insert.text)
-            session.applied_snapshot += insert.text
             ack_payload["seq"] = insert.seq
-            ack_payload["ok"] = True
-            self.stats.ack_ok += 1
-            LOGGER.info(
-                "text_insert ok client_id=%s seq=%s text_len=%d paste_mode=%s",
-                state.get("client_id", ""),
-                insert.seq,
-                len(insert.text),
-                paste_mode,
+            if insert.op_id:
+                ack_payload["op_id"] = insert.op_id
+
+            is_duplicate = bool(
+                insert.op_id and self.applied_ops.contains(session.client_id, insert.op_id)
             )
+            if is_duplicate:
+                # The client may resend after losing an ACK. Advance the new
+                # session's logical snapshot, but never inject the same append twice.
+                session.applied_snapshot += insert.text
+                ack_payload["ok"] = True
+                ack_payload["duplicate"] = True
+                self.stats.ack_ok += 1
+                LOGGER.info(
+                    "text_insert duplicate client_id=%s seq=%s op_id=%s text_len=%d",
+                    session.client_id,
+                    insert.seq,
+                    insert.op_id,
+                    len(insert.text),
+                )
+            else:
+                paste_mode = insert.paste_mode or session.paste_mode
+                LOGGER.info(
+                    "text_insert start client_id=%s seq=%s op_id=%s text_len=%d paste_mode=%s preview=%r",
+                    session.client_id,
+                    insert.seq,
+                    insert.op_id or "",
+                    len(insert.text),
+                    paste_mode,
+                    _preview_text(insert.text),
+                )
+                self.injector.set_paste_mode(paste_mode)
+                await self._run_injector(self.injector.inject_text, insert.text)
+                session.applied_snapshot += insert.text
+                if insert.op_id and not self.applied_ops.record(session.client_id, insert.op_id):
+                    # Delivery already happened, so persistence failure must not
+                    # turn a successful insert into a retry/duplicate.
+                    LOGGER.warning(
+                        "dedupe ledger persistence failed client_id=%s op_id=%s",
+                        session.client_id,
+                        insert.op_id,
+                    )
+                ack_payload["ok"] = True
+                self.stats.ack_ok += 1
+                LOGGER.info(
+                    "text_insert ok client_id=%s seq=%s op_id=%s text_len=%d paste_mode=%s",
+                    session.client_id,
+                    insert.seq,
+                    insert.op_id or "",
+                    len(insert.text),
+                    paste_mode,
+                )
         except (ProtocolError, PermissionError, ValueError, RuntimeError) as exc:
             ack_payload["reason"] = str(exc)
             self.stats.ack_fail += 1

@@ -213,6 +213,37 @@ class ServerFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ack["ok"])
         self.assertEqual(self.injector.applied, ["b"])
 
+    async def test_retried_op_id_is_acked_without_duplicate_injection(self) -> None:
+        first_auth = await self._auth()
+        op_id = "stable-op-1"
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            (
+                '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"op_id":"%s","text":"once","ts":%d}'
+                % (first_auth["session_id"], first_auth["token"], op_id, int(time.time() * 1000))
+            ),
+        )
+        first_ack = self.ws.sent[-1]
+        self.assertTrue(first_ack["ok"])
+        self.assertEqual(self.injector.applied, ["once"])
+
+        await self.host._dispatch(self.ws, self.state, '{"type":"auth"}')
+        second_auth = self.ws.sent[-1]
+        await self.host._dispatch(
+            self.ws,
+            self.state,
+            (
+                '{"type":"text_insert","session_id":"%s","token":"%s","seq":1,"op_id":"%s","text":"once","ts":%d}'
+                % (second_auth["session_id"], second_auth["token"], op_id, int(time.time() * 1000))
+            ),
+        )
+        retry_ack = self.ws.sent[-1]
+        self.assertTrue(retry_ack["ok"])
+        self.assertTrue(retry_ack["duplicate"])
+        self.assertEqual(retry_ack["op_id"], op_id)
+        self.assertEqual(self.injector.applied, ["once"])
+
     async def test_1000_char_stream(self) -> None:
         auth_ok = await self._auth()
         for seq in range(1, 1001):

@@ -6,9 +6,10 @@ Python host service for VibeMic. It receives phone-side text over WebSocket and 
 
 - `hello -> auth -> text_insert -> ack` append-only main protocol.
 - Token-based authenticated session establishment.
-- Strict sequence ordering (`seq` must increment by 1).
-- Unicode text validation (control chars blocked in MVP scope).
-- Heartbeat and session timeout.
+- Strict per-session sequence ordering (`seq` must increment by 1).
+- Stable `op_id` deduplication with a bounded persistent ledger, so normal ACK-loss/reconnect retries do not paste the same chunk twice.
+- Unicode text validation; transport-level control chars remain rejected while the Android client normalizes IME control characters before send.
+- Heartbeat with a 120-second default session timeout.
 - Single active phone session.
 
 ## Role in the product

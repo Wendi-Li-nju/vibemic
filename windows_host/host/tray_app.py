@@ -7,6 +7,7 @@ import socket
 from typing import Optional
 
 from .config import HostConfig
+from .dedupe import default_applied_ops_path
 from .service import HostService
 
 
@@ -40,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=120000,
         help="Session timeout in milliseconds",
+    )
+    parser.add_argument(
+        "--applied-ops-path",
+        default=str(default_applied_ops_path()),
+        help="Persistent dedupe ledger for safely retried append operations",
     )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
@@ -111,6 +117,7 @@ def run() -> None:
         port=args.port,
         heartbeat_interval_ms=args.heartbeat_interval_ms,
         session_timeout_ms=args.session_timeout_ms,
+        applied_ops_path=args.applied_ops_path,
     )
     app = TrayHostApp(config)
     app.run()
